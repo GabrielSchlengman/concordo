@@ -1,33 +1,30 @@
-# Publicar o Lume gratuitamente
+# Lume Cloud
 
-Este projeto já está configurado para o plano gratuito do Render.
+Servidor público do Lume com chat, presença, chamadas P2P e compartilhamento de tela.
 
-## O que você precisa
+## Publicar gratuitamente
 
-- Uma conta gratuita no GitHub.
-- Uma conta gratuita no Render.
-- O pacote `Lume-Cloud-Render.zip`.
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/GabrielSchlengman/concordo)
 
-## Publicação
+1. Clique no botão **Deploy to Render** acima.
+2. Entre ou crie uma conta gratuita no Render.
+3. Autorize o acesso ao GitHub, caso seja solicitado.
+4. Confirme o serviço `lume-app` no plano **Free**.
+5. Aguarde a publicação terminar.
 
-1. Extraia `Lume-Cloud-Render.zip`.
-2. Crie um repositório novo no GitHub chamado `lume-cloud`.
-3. Envie todos os arquivos extraídos para a raiz desse repositório.
-4. No Render, escolha **New → Blueprint**.
-5. Conecte o repositório `lume-cloud`.
-6. Confirme a criação do serviço `lume-app` no plano **Free**.
-7. Aguarde o deploy terminar e abra o endereço `https://...onrender.com` mostrado pelo Render.
+O Render mostrará um endereço parecido com `https://lume-app.onrender.com`. Esse será o link público para compartilhar.
 
-Não é necessário configurar variáveis secretas nesta versão.
+## Plano gratuito
 
-## Comportamento do plano gratuito
+- O serviço pode adormecer depois de um período sem uso.
+- A primeira abertura pode levar cerca de um minuto quando ele estiver adormecido.
+- O histórico desta versão fica na memória e pode desaparecer quando o serviço reinicia.
 
-- O serviço pode adormecer após ficar sem uso.
-- A primeira abertura depois desse período pode demorar cerca de um minuto.
-- Enquanto houver pessoas usando o Lume, o aplicativo envia verificações periódicas para manter o serviço ativo.
-- O histórico atual fica apenas na memória e pode desaparecer quando o serviço reinicia.
+## Diagnóstico
 
-## Depois de publicar
+Depois da publicação, o endereço `/api/health` deve responder com:
 
-Guarde o endereço `https://...onrender.com`. Ele é o link que você compartilhará com outras pessoas. Também será usado para configurar a próxima versão do aplicativo desktop.
+```json
+{"ok":true,"name":"Lume"}
+```
 
