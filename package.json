@@ -1,0 +1,13 @@
+{
+  "name": "lume-cloud",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Servidor público do Lume para hospedagem gratuita no Render.",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
+
