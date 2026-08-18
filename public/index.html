@@ -4,14 +4,14 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#12131a" />
-    <title>Lume — seu espaço, sua galera</title>
+    <title>Concord — seu espaço, sua galera</title>
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
     <div id="app" class="app-shell is-hidden">
       <aside class="server-rail" aria-label="Servidores">
-        <button class="server-icon brand active" title="Lume" aria-label="Lume">
-          <span class="brand-mark">L</span>
+        <button class="server-icon brand active" title="Concord" aria-label="Concord">
+          <span class="brand-mark">C</span>
         </button>
         <div class="rail-line"></div>
         <button class="server-icon server-one" title="Comunidade Criativa" aria-label="Comunidade Criativa">CC</button>
@@ -23,7 +23,7 @@
         <header class="server-header">
           <div>
             <span class="eyebrow">SEU ESPAÇO</span>
-            <h1>Comunidade Lume</h1>
+            <h1>Comunidade Concord</h1>
           </div>
           <button class="icon-button" aria-label="Opções do servidor">⌄</button>
         </header>
@@ -58,7 +58,7 @@
             <span id="profile-status">Disponível</span>
           </div>
           <button id="mic-compact" class="icon-button" title="Microfone" aria-label="Microfone">♩</button>
-          <button id="settings-button" class="icon-button" title="Editar perfil" aria-label="Editar perfil">⚙</button>
+          <button id="settings-button" class="icon-button" title="Configurações" aria-label="Abrir configurações">⚙</button>
         </footer>
       </aside>
 
@@ -83,7 +83,11 @@
               <span class="live-pill"><span></span> AO VIVO</span>
               <h3 id="call-title">Lobby</h3>
             </div>
-            <button id="minimize-call" class="icon-button" title="Minimizar chamada" aria-label="Minimizar chamada">⌃</button>
+            <div class="call-view-actions">
+              <button id="layout-button" class="call-view-button" title="Alternar visualização" aria-label="Alternar visualização"><span>▦</span><small>Grade</small></button>
+              <button id="fullscreen-button" class="call-view-button" title="Chamada em tela cheia" aria-label="Chamada em tela cheia"><span>⛶</span><small>Tela cheia</small></button>
+              <button id="minimize-call" class="icon-button" title="Minimizar chamada" aria-label="Minimizar chamada">⌃</button>
+            </div>
           </div>
           <div id="video-grid" class="video-grid"></div>
           <div class="call-controls">
@@ -120,14 +124,14 @@
 
     <div id="welcome-modal" class="modal-backdrop">
       <form id="welcome-form" class="welcome-card">
-        <div class="welcome-logo">L</div>
-        <span class="eyebrow">BEM-VINDO AO LUME</span>
+        <div class="welcome-logo">C</div>
+        <span class="eyebrow">BEM-VINDO AO CONCORD</span>
         <h2>Um lugar para ficar junto.</h2>
         <p>Entre com um nome para conversar e testar chamadas com outras pessoas na sua rede.</p>
         <label for="name-input">Como devemos chamar você?</label>
         <input id="name-input" maxlength="32" autocomplete="nickname" placeholder="Seu nome" required />
-        <button type="submit">Entrar no Lume <span>→</span></button>
-        <small>Protótipo local — nenhuma conta é necessária.</small>
+        <button type="submit">Entrar no Concord <span>→</span></button>
+        <small>Nenhuma conta é necessária.</small>
       </form>
     </div>
 
@@ -144,6 +148,105 @@
         </div>
         <div id="source-grid" class="source-grid"></div>
         <p>Escolha uma tela ou janela. Você poderá interromper o compartilhamento a qualquer momento.</p>
+      </section>
+    </div>
+
+    <div id="settings-modal" class="settings-backdrop is-hidden">
+      <section class="settings-card" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+        <aside class="settings-nav">
+          <div class="settings-brand"><span>C</span><strong>Concord</strong></div>
+          <p>CONFIGURAÇÕES</p>
+          <button class="settings-tab active" data-settings-target="account-settings">Minha conta</button>
+          <button class="settings-tab" data-settings-target="voice-settings">Voz e áudio</button>
+          <button class="settings-tab" data-settings-target="video-settings">Vídeo e tela</button>
+          <button class="settings-tab" data-settings-target="appearance-settings">Aparência</button>
+          <div class="settings-nav-spacer"></div>
+          <button id="reset-settings" class="settings-tab danger-text">Restaurar padrões</button>
+        </aside>
+
+        <main class="settings-content">
+          <button id="close-settings" class="settings-close" aria-label="Fechar configurações"><span>×</span><small>ESC</small></button>
+
+          <section id="account-settings" class="settings-section active">
+            <span class="eyebrow">MINHA CONTA</span>
+            <h2 id="settings-title">Seu perfil no Concord</h2>
+            <p class="settings-lead">Escolha como seu nome aparece nas salas.</p>
+            <div class="account-preview">
+              <div id="settings-avatar" class="settings-avatar">V</div>
+              <div><strong id="settings-preview-name">Visitante</strong><span>Disponível</span></div>
+            </div>
+            <label class="field-label" for="settings-name-input">Nome de exibição</label>
+            <div class="inline-field">
+              <input id="settings-name-input" maxlength="32" autocomplete="nickname" />
+              <button id="save-profile" class="primary-action" type="button">Salvar</button>
+            </div>
+            <p id="name-settings-hint" class="field-hint">O nome é mostrado para todo mundo na sala.</p>
+          </section>
+
+          <section id="voice-settings" class="settings-section">
+            <span class="eyebrow">VOZ E ÁUDIO</span>
+            <h2>Microfone e saída de som</h2>
+            <p class="settings-lead">Ajuste os dispositivos e veja o medidor reagir à sua voz.</p>
+            <div class="settings-grid two-columns">
+              <label class="settings-field">Dispositivo de entrada<select id="microphone-select"></select></label>
+              <label class="settings-field">Dispositivo de saída<select id="speaker-select"></select></label>
+            </div>
+            <div class="mic-test-card">
+              <div class="mic-test-copy"><strong>Teste do microfone</strong><span id="mic-test-status">Fale para conferir seu volume</span></div>
+              <div class="level-meter" aria-label="Nível do microfone"><span id="mic-level-fill"></span></div>
+              <button id="mic-test-button" class="secondary-action" type="button">Testar</button>
+            </div>
+            <label class="range-field" for="sensitivity-range">
+              <span><strong>Sensibilidade de entrada</strong><output id="sensitivity-value">55%</output></span>
+              <input id="sensitivity-range" type="range" min="0" max="100" step="1" />
+              <small>Quanto maior, mais facilmente o Concord detecta que você está falando.</small>
+            </label>
+            <div class="toggle-list">
+              <label><span><strong>Supressão de ruído</strong><small>Ajuda a remover sons constantes do ambiente.</small></span><input id="noise-suppression" type="checkbox" /><i></i></label>
+              <label><span><strong>Cancelamento de eco</strong><small>Reduz o retorno do som dos alto-falantes.</small></span><input id="echo-cancellation" type="checkbox" /><i></i></label>
+              <label><span><strong>Ganho automático</strong><small>Equilibra automaticamente o volume da voz.</small></span><input id="auto-gain" type="checkbox" /><i></i></label>
+            </div>
+          </section>
+
+          <section id="video-settings" class="settings-section">
+            <span class="eyebrow">VÍDEO E TELA</span>
+            <h2>Câmera e compartilhamento</h2>
+            <p class="settings-lead">Defina a qualidade e como as transmissões aparecem na chamada.</p>
+            <div class="settings-grid two-columns">
+              <label class="settings-field">Câmera<select id="camera-select"></select></label>
+              <label class="settings-field">Qualidade do compartilhamento
+                <select id="share-quality">
+                  <option value="720">Equilibrada — 720p</option>
+                  <option value="1080">Alta — 1080p</option>
+                  <option value="1440">Muito alta — 1440p</option>
+                </select>
+              </label>
+            </div>
+            <div class="toggle-list">
+              <label><span><strong>Priorizar compartilhamentos</strong><small>Coloca automaticamente uma tela compartilhada em destaque.</small></span><input id="auto-focus-shares" type="checkbox" /><i></i></label>
+            </div>
+            <div class="layout-picker" role="group" aria-label="Visualização padrão">
+              <p>VISUALIZAÇÃO PADRÃO</p>
+              <button class="layout-choice" data-layout-choice="grid" type="button"><span>▦</span><strong>Grade</strong><small>Todos aparecem com o mesmo tamanho.</small></button>
+              <button class="layout-choice" data-layout-choice="focus" type="button"><span>▰</span><strong>Destaque</strong><small>Uma transmissão grande e as outras menores.</small></button>
+            </div>
+          </section>
+
+          <section id="appearance-settings" class="settings-section">
+            <span class="eyebrow">APARÊNCIA</span>
+            <h2>Deixe do seu jeito</h2>
+            <p class="settings-lead">Escolha a cor do Concord e a densidade da interface.</p>
+            <div class="accent-picker" role="group" aria-label="Cor de destaque">
+              <button class="accent-choice purple" data-accent="purple" aria-label="Roxo" type="button"></button>
+              <button class="accent-choice blue" data-accent="blue" aria-label="Azul" type="button"></button>
+              <button class="accent-choice green" data-accent="green" aria-label="Verde" type="button"></button>
+              <button class="accent-choice pink" data-accent="pink" aria-label="Rosa" type="button"></button>
+            </div>
+            <div class="toggle-list">
+              <label><span><strong>Modo compacto</strong><small>Reduz os espaços para caber mais conteúdo.</small></span><input id="compact-mode" type="checkbox" /><i></i></label>
+            </div>
+          </section>
+        </main>
       </section>
     </div>
     <script src="/app.js" defer></script>
