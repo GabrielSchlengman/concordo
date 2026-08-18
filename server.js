@@ -4,65 +4,130 @@ const path = require('node:path');
 const { URL } = require('node:url');
 
 const PUBLIC_DIR = path.join(__dirname, 'public');
-const MAX_BODY_BYTES = 64 * 1024;
+const MAX_BODY_BYTES = 384 * 1024;
+const MAX_CLIENTS = 300;
 const MAX_CLIENTS_PER_ROOM = 150;
-const ALLOWED_ROOMS = new Set(['geral', 'projetos', 'cafe', 'lobby', 'jogos', 'musica']);
+const RECONNECT_GRACE_MS = 8_000;
+const TEXT_ROOMS = new Set(['geral', 'projetos', 'cafe']);
+const VOICE_ROOMS = new Set(['lobby', 'jogos', 'musica']);
 const rooms = new Map();
+const clients = new Map();
 const requestWindows = new Map();
 
 const securityHeaders = {
-  'Content-Security-Policy': "default-src 'self'; img-src 'self' data:; media-src 'self' blob:; connect-src 'self' https: wss:; style-src 'self' 'unsafe-inline'; script-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
+  'Content-Security-Policy': "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' https: wss:; style-src 'self' 'unsafe-inline'; script-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
   'Cross-Origin-Opener-Policy': 'same-origin',
-  'Permissions-Policy': 'camera=(self), microphone=(self), display-capture=(self)',
+  'Permissions-Policy': 'camera=(self), microphone=(self), display-capture=(self), speaker-selection=(self)',
   'Referrer-Policy': 'no-referrer',
   'X-Content-Type-Options': 'nosniff',
   'X-Frame-Options': 'DENY',
 };
 
 function getRoom(roomId) {
-  if (!rooms.has(roomId)) {
-    rooms.set(roomId, { clients: new Map(), messages: [] });
-  }
+  if (!rooms.has(roomId)) rooms.set(roomId, { clients: new Map(), messages: [] });
   return rooms.get(roomId);
 }
 
-function cleanId(value, fallback = 'geral') {
-  const id = String(value || '').trim().replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 48);
+function cleanId(value, fallback = '') {
+  const id = String(value || '').trim().replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64);
   return id || fallback;
 }
 
-function cleanRoom(value) {
-  const roomId = cleanId(value);
-  return ALLOWED_ROOMS.has(roomId) ? roomId : 'geral';
+function cleanRoom(value, fallback = 'geral') {
+  const roomId = cleanId(value, fallback);
+  return TEXT_ROOMS.has(roomId) ? roomId : fallback;
+}
+
+function cleanVoiceRoom(value) {
+  const roomId = cleanId(value, '');
+  return VOICE_ROOMS.has(roomId) ? roomId : null;
 }
 
 function cleanName(value) {
   return String(value || 'Visitante').trim().replace(/\s+/g, ' ').slice(0, 32) || 'Visitante';
 }
 
+function cleanAvatar(value) {
+  const avatar = String(value || '');
+  if (!avatar) return '';
+  if (avatar.length > 140_000) return '';
+  return /^data:image\/(?:png|jpe?g|webp);base64,[a-zA-Z0-9+/=]+$/.test(avatar) ? avatar : '';
+}
+
+function cleanMediaState(value) {
+  return {
+    micEnabled: value?.micEnabled !== false,
+    cameraEnabled: value?.cameraEnabled === true,
+    screenSharing: value?.screenSharing === true,
+    annotationsEnabled: value?.annotationsEnabled === true,
+    deafened: value?.deafened === true,
+  };
+}
+
+function publicUser(client) {
+  return {
+    id: client.id,
+    name: client.name,
+    avatar: client.avatar || '',
+    textRoom: client.textRoom,
+    voiceRoom: client.voiceRoom,
+    inCall: Boolean(client.voiceRoom),
+    media: cleanMediaState(client.media),
+  };
+}
+
 function writeSse(response, payload) {
-  if (response.writableEnded) return;
+  if (!response || response.writableEnded || response.destroyed) return;
   response.write(`data: ${JSON.stringify(payload)}\n\n`);
 }
 
-function broadcast(room, payload, exceptId = null) {
+function broadcastTextRoom(roomId, payload, exceptId = null) {
+  const room = getRoom(roomId);
   for (const [id, client] of room.clients) {
     if (id !== exceptId) writeSse(client.response, payload);
   }
 }
 
-function usersFor(room) {
-  return [...room.clients.entries()].map(([id, client]) => ({
-    id,
-    name: client.name,
-    inCall: client.inCall,
-  }));
+function broadcastVoiceRoom(voiceRoom, payload, exceptId = null) {
+  if (!voiceRoom) return;
+  for (const [id, client] of clients) {
+    if (id !== exceptId && client.voiceRoom === voiceRoom) writeSse(client.response, payload);
+  }
 }
 
-function sendRoomState(room) {
-  const users = usersFor(room);
-  broadcast(room, { type: 'presence', users });
-  broadcast(room, { type: 'call-state', users: users.filter((user) => user.inCall) });
+function broadcastAll(payload) {
+  for (const client of clients.values()) writeSse(client.response, payload);
+}
+
+function usersForTextRoom(roomId) {
+  return [...getRoom(roomId).clients.values()].map(publicUser);
+}
+
+function voiceChannelsState() {
+  const channels = Object.fromEntries([...VOICE_ROOMS].map((roomId) => [roomId, []]));
+  for (const client of clients.values()) {
+    if (client.voiceRoom && channels[client.voiceRoom]) channels[client.voiceRoom].push(publicUser(client));
+  }
+  return channels;
+}
+
+function sendTextPresence(...roomIds) {
+  for (const roomId of new Set(roomIds.filter(Boolean))) {
+    broadcastTextRoom(roomId, { type: 'presence', users: usersForTextRoom(roomId) });
+  }
+}
+
+function sendVoiceState() {
+  const channels = voiceChannelsState();
+  broadcastAll({ type: 'voice-state', channels });
+  for (const client of clients.values()) {
+    if (!client.voiceRoom) continue;
+    writeSse(client.response, {
+      type: 'call-state',
+      room: client.voiceRoom,
+      users: channels[client.voiceRoom] || [],
+    });
+  }
 }
 
 function json(response, status, body) {
@@ -83,7 +148,7 @@ function isRateLimited(request) {
     return false;
   }
   current.count += 1;
-  return current.count > 120;
+  return current.count > 240;
 }
 
 function readJson(request) {
@@ -123,7 +188,6 @@ function serveStatic(requestUrl, response) {
       json(response, 404, { error: 'Arquivo não encontrado' });
       return;
     }
-
     const contentTypes = {
       '.html': 'text/html; charset=utf-8',
       '.css': 'text/css; charset=utf-8',
@@ -132,7 +196,6 @@ function serveStatic(requestUrl, response) {
       '.png': 'image/png',
       '.ico': 'image/x-icon',
     };
-
     response.writeHead(200, {
       ...securityHeaders,
       'Content-Type': contentTypes[path.extname(filePath)] || 'application/octet-stream',
@@ -142,37 +205,81 @@ function serveStatic(requestUrl, response) {
   });
 }
 
+function scheduleDisconnect(clientId, response) {
+  const client = clients.get(clientId);
+  if (!client || client.response !== response) return;
+  clearTimeout(client.disconnectTimer);
+  client.disconnectTimer = setTimeout(() => {
+    const current = clients.get(clientId);
+    if (!current || current.response !== response) return;
+    const textRoom = current.textRoom;
+    const voiceRoom = current.voiceRoom;
+    getRoom(textRoom).clients.delete(clientId);
+    clients.delete(clientId);
+    if (voiceRoom) broadcastVoiceRoom(voiceRoom, { type: 'peer-left', id: clientId }, clientId);
+    sendTextPresence(textRoom);
+    sendVoiceState();
+  }, RECONNECT_GRACE_MS);
+  client.disconnectTimer.unref?.();
+}
+
+function iceServers() {
+  const configuredUrls = String(process.env.TURN_URLS || '').split(',').map((item) => item.trim()).filter(Boolean);
+  if (configuredUrls.length && process.env.TURN_USERNAME && process.env.TURN_CREDENTIAL) {
+    return [
+      { urls: ['stun:stun.l.google.com:19302', 'stun:stun.relay.metered.ca:80'] },
+      { urls: configuredUrls, username: process.env.TURN_USERNAME, credential: process.env.TURN_CREDENTIAL },
+    ];
+  }
+  return [
+    { urls: ['stun:stun.l.google.com:19302', 'stun:stun.relay.metered.ca:80'] },
+    {
+      urls: [
+        'turn:openrelay.metered.ca:80',
+        'turn:openrelay.metered.ca:443',
+        'turn:openrelay.metered.ca:443?transport=tcp',
+      ],
+      username: 'openrelayproject',
+      credential: 'openrelayproject',
+    },
+  ];
+}
+
 function createServer() {
   return http.createServer(async (request, response) => {
     const requestUrl = new URL(request.url, `http://${request.headers.host || 'localhost'}`);
 
     if (request.method === 'GET' && requestUrl.pathname === '/') {
-      response.writeHead(302, {
-        ...securityHeaders,
-        Location: '/index.html',
-        'Cache-Control': 'no-store',
-      });
+      response.writeHead(302, { ...securityHeaders, Location: '/index.html', 'Cache-Control': 'no-store' });
       response.end();
       return;
     }
 
     if (request.method === 'GET' && requestUrl.pathname === '/api/health') {
-      json(response, 200, { ok: true, name: 'Concord' });
+      json(response, 200, { ok: true, name: 'Concord', version: '0.4.0' });
+      return;
+    }
+
+    if (request.method === 'GET' && requestUrl.pathname === '/api/ice') {
+      json(response, 200, { iceServers: iceServers() });
       return;
     }
 
     if (request.method === 'GET' && requestUrl.pathname === '/api/events') {
-      const roomId = cleanRoom(requestUrl.searchParams.get('room'));
-      const clientId = cleanId(requestUrl.searchParams.get('clientId'), '');
+      const textRoom = cleanRoom(requestUrl.searchParams.get('room'));
+      const clientId = cleanId(requestUrl.searchParams.get('clientId'));
       const name = cleanName(requestUrl.searchParams.get('name'));
-
       if (!clientId) {
         json(response, 400, { error: 'Cliente inválido' });
         return;
       }
-
-      const room = getRoom(roomId);
-      if (!room.clients.has(clientId) && room.clients.size >= MAX_CLIENTS_PER_ROOM) {
+      const existing = clients.get(clientId);
+      if (!existing && clients.size >= MAX_CLIENTS) {
+        json(response, 503, { error: 'O Concord está cheio. Tente novamente em instantes.' });
+        return;
+      }
+      const nextRoom = getRoom(textRoom);
+      if (!existing && nextRoom.clients.size >= MAX_CLIENTS_PER_ROOM) {
         json(response, 503, { error: 'Esta sala está cheia. Tente novamente em instantes.' });
         return;
       }
@@ -186,30 +293,42 @@ function createServer() {
       });
       response.write(': conectado\n\n');
 
-      const previous = room.clients.get(clientId);
-      if (previous && !previous.response.writableEnded) previous.response.end();
+      const previousTextRoom = existing?.textRoom;
+      if (existing) {
+        clearTimeout(existing.disconnectTimer);
+        if (existing.response && !existing.response.writableEnded) existing.response.end();
+        if (previousTextRoom && previousTextRoom !== textRoom) getRoom(previousTextRoom).clients.delete(clientId);
+      }
+      const client = existing || {
+        id: clientId,
+        avatar: '',
+        voiceRoom: null,
+        media: cleanMediaState(),
+      };
+      client.name = name;
+      client.response = response;
+      client.textRoom = textRoom;
+      client.disconnectTimer = null;
+      clients.set(clientId, client);
+      nextRoom.clients.set(clientId, client);
 
-      const client = { name, response, inCall: Boolean(previous?.inCall) };
-      room.clients.set(clientId, client);
       writeSse(response, {
         type: 'hello',
-        room: roomId,
-        messages: room.messages,
-        users: usersFor(room),
+        room: textRoom,
+        messages: nextRoom.messages,
+        users: usersForTextRoom(textRoom),
+        voiceChannels: voiceChannelsState(),
+        self: publicUser(client),
       });
-      sendRoomState(room);
+      sendTextPresence(previousTextRoom, textRoom);
+      sendVoiceState();
 
       const heartbeat = setInterval(() => {
         if (!response.writableEnded) response.write(': ping\n\n');
       }, 20_000);
-
       request.on('close', () => {
         clearInterval(heartbeat);
-        const current = room.clients.get(clientId);
-        if (current?.response !== response) return;
-        room.clients.delete(clientId);
-        if (current.inCall) broadcast(room, { type: 'peer-left', id: clientId });
-        sendRoomState(room);
+        scheduleDisconnect(clientId, response);
       });
       return;
     }
@@ -221,59 +340,117 @@ function createServer() {
       }
       try {
         const body = await readJson(request);
-        const roomId = cleanRoom(body.room);
-        const clientId = cleanId(body.clientId, '');
-        const room = getRoom(roomId);
-        const client = room.clients.get(clientId);
-
+        const clientId = cleanId(body.clientId);
+        const client = clients.get(clientId);
         if (!client) {
-          json(response, 409, { error: 'Reconecte-se à sala e tente novamente.' });
+          json(response, 409, { error: 'Reconecte-se e tente novamente.' });
           return;
         }
 
         if (requestUrl.pathname === '/api/message') {
+          const roomId = cleanRoom(body.room || client.textRoom);
           const text = String(body.text || '').trim().slice(0, 2000);
           if (!text) {
             json(response, 400, { error: 'Mensagem vazia' });
             return;
           }
+          const room = getRoom(roomId);
           const message = {
             id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
             clientId,
             name: client.name,
+            avatar: client.avatar || '',
             text,
             createdAt: new Date().toISOString(),
           };
           room.messages.push(message);
           if (room.messages.length > 100) room.messages.shift();
-          broadcast(room, { type: 'message', message });
+          broadcastTextRoom(roomId, { type: 'message', message });
           json(response, 201, { ok: true });
+          return;
+        }
+
+        if (requestUrl.pathname === '/api/profile') {
+          client.name = cleanName(body.name || client.name);
+          if (Object.hasOwn(body, 'avatar')) client.avatar = cleanAvatar(body.avatar);
+          sendTextPresence(client.textRoom);
+          sendVoiceState();
+          json(response, 200, { ok: true, user: publicUser(client) });
           return;
         }
 
         if (requestUrl.pathname === '/api/call') {
           const joining = body.action === 'join';
-          client.inCall = joining;
-          if (!joining) broadcast(room, { type: 'peer-left', id: clientId }, clientId);
-          sendRoomState(room);
-          json(response, 200, { ok: true, users: usersFor(room).filter((user) => user.inCall) });
+          const previousVoiceRoom = client.voiceRoom;
+          const nextVoiceRoom = joining ? cleanVoiceRoom(body.voiceRoom || body.room) : null;
+          if (joining && !nextVoiceRoom) {
+            json(response, 400, { error: 'Canal de voz inválido' });
+            return;
+          }
+          if (previousVoiceRoom && previousVoiceRoom !== nextVoiceRoom) {
+            broadcastVoiceRoom(previousVoiceRoom, { type: 'peer-left', id: clientId }, clientId);
+          }
+          client.voiceRoom = nextVoiceRoom;
+          client.media = joining ? cleanMediaState(body.media) : cleanMediaState();
+          sendVoiceState();
+          json(response, 200, {
+            ok: true,
+            voiceRoom: client.voiceRoom,
+            users: client.voiceRoom ? voiceChannelsState()[client.voiceRoom] : [],
+          });
+          return;
+        }
+
+        if (requestUrl.pathname === '/api/media-state') {
+          if (!client.voiceRoom) {
+            json(response, 409, { error: 'Você não está em uma chamada.' });
+            return;
+          }
+          client.media = cleanMediaState(body.media);
+          sendVoiceState();
+          json(response, 200, { ok: true });
           return;
         }
 
         if (requestUrl.pathname === '/api/signal') {
-          const targetId = cleanId(body.target, '');
-          const target = room.clients.get(targetId);
-          if (!client.inCall || !target?.inCall) {
+          const targetId = cleanId(body.target);
+          const target = clients.get(targetId);
+          if (!client.voiceRoom || target?.voiceRoom !== client.voiceRoom) {
             json(response, 409, { error: 'Participante fora da chamada' });
             return;
           }
-          writeSse(target.response, {
-            type: 'signal',
-            from: clientId,
-            name: client.name,
-            data: body.data,
-          });
+          writeSse(target.response, { type: 'signal', from: clientId, name: client.name, data: body.data });
           json(response, 200, { ok: true });
+          return;
+        }
+
+        if (requestUrl.pathname === '/api/annotation') {
+          const shareOwnerId = cleanId(body.shareOwnerId);
+          const shareOwner = clients.get(shareOwnerId);
+          if (!client.voiceRoom || shareOwner?.voiceRoom !== client.voiceRoom || !shareOwner.media.screenSharing) {
+            json(response, 409, { error: 'Compartilhamento indisponível.' });
+            return;
+          }
+          const action = body.action === 'clear' ? 'clear' : 'stroke';
+          const payload = { type: 'annotation', action, shareOwnerId, from: clientId };
+          if (action === 'stroke') {
+            const rawPoints = Array.isArray(body.stroke?.points) ? body.stroke.points.slice(0, 800) : [];
+            payload.stroke = {
+              id: cleanId(body.stroke?.id, `${Date.now()}`),
+              color: /^#[0-9a-fA-F]{6}$/.test(body.stroke?.color) ? body.stroke.color : '#ff5f6d',
+              width: Math.max(1, Math.min(10, Number(body.stroke?.width) || 3)),
+              points: rawPoints.map((point) => ({
+                x: Math.max(0, Math.min(1, Number(point.x) || 0)),
+                y: Math.max(0, Math.min(1, Number(point.y) || 0)),
+              })),
+            };
+            if (payload.stroke.points.length < 2) {
+              json(response, 400, { error: 'Traço inválido.' });
+              return;
+            }
+          }
+          broadcastVoiceRoom(client.voiceRoom, payload);
+          json(response, 201, { ok: true });
           return;
         }
 
@@ -288,7 +465,6 @@ function createServer() {
       serveStatic(requestUrl, response);
       return;
     }
-
     json(response, 405, { error: 'Método não permitido' });
   });
 }
@@ -297,18 +473,14 @@ if (require.main === module) {
   const port = Number(process.env.PORT) || 4173;
   const host = process.env.HOST || '0.0.0.0';
   const server = createServer();
-  server.listen(port, host, () => {
-    console.log(`Concord disponível em http://localhost:${port}`);
-  });
+  server.listen(port, host, () => console.log(`Concord disponível em http://localhost:${port}`));
 
   let shuttingDown = false;
   const shutdown = () => {
     if (shuttingDown) return;
     shuttingDown = true;
-    for (const room of rooms.values()) {
-      broadcast(room, { type: 'server-restarting' });
-      for (const client of room.clients.values()) client.response.end();
-    }
+    broadcastAll({ type: 'server-restarting' });
+    for (const client of clients.values()) client.response?.end();
     server.close(() => process.exit(0));
     setTimeout(() => process.exit(0), 10_000).unref();
   };
