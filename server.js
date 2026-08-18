@@ -146,6 +146,16 @@ function createServer() {
   return http.createServer(async (request, response) => {
     const requestUrl = new URL(request.url, `http://${request.headers.host || 'localhost'}`);
 
+    if (request.method === 'GET' && requestUrl.pathname === '/') {
+      response.writeHead(302, {
+        ...securityHeaders,
+        Location: '/index.html',
+        'Cache-Control': 'no-store',
+      });
+      response.end();
+      return;
+    }
+
     if (request.method === 'GET' && requestUrl.pathname === '/api/health') {
       json(response, 200, { ok: true, name: 'Lume' });
       return;
