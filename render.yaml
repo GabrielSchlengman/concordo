@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: lume-app
+    runtime: node
+    plan: free
+    region: virginia
+    buildCommand: npm install --omit=dev
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_VERSION
+        value: 22
+
