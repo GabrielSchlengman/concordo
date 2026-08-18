@@ -1,255 +1,190 @@
 <!doctype html>
 <html lang="pt-BR">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#12131a" />
-    <title>Concord — seu espaço, sua galera</title>
-    <link rel="stylesheet" href="/styles.css" />
-  </head>
-  <body>
-    <div id="app" class="app-shell is-hidden">
-      <aside class="server-rail" aria-label="Servidores">
-        <button class="server-icon brand active" title="Concord" aria-label="Concord">
-          <span class="brand-mark">C</span>
-        </button>
-        <div class="rail-line"></div>
-        <button class="server-icon server-one" title="Comunidade Criativa" aria-label="Comunidade Criativa">CC</button>
-        <button class="server-icon server-two" title="Dev House" aria-label="Dev House">DH</button>
-        <button class="server-icon add-server" title="Adicionar servidor" aria-label="Adicionar servidor">+</button>
-      </aside>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#17191f">
+  <title>Concord</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div id="app" class="app">
+    <aside class="brand-rail" aria-label="Concord">
+      <div class="brand-mark" title="Concord">C</div>
+      <div class="rail-line"></div>
+      <button class="rail-room active" aria-label="Comunidade Concord">CO</button>
+    </aside>
 
-      <aside class="channel-sidebar">
-        <header class="server-header">
-          <div>
-            <span class="eyebrow">SEU ESPAÇO</span>
-            <h1>Comunidade Concord</h1>
-          </div>
-          <button class="icon-button" aria-label="Opções do servidor">⌄</button>
-        </header>
+    <aside class="sidebar">
+      <header class="server-header">
+        <div><strong>CONCORD</strong><small>seu espaço</small></div>
+        <span class="status-dot" title="Conectado"></span>
+      </header>
 
-        <nav class="channels" aria-label="Canais">
-          <div class="channel-section">
-            <div class="section-title"><span>CANAIS DE TEXTO</span><button aria-label="Criar canal">+</button></div>
-            <button class="channel active" data-room="geral" data-kind="text"><span class="channel-symbol">#</span> geral</button>
-            <button class="channel" data-room="projetos" data-kind="text"><span class="channel-symbol">#</span> projetos</button>
-            <button class="channel" data-room="cafe" data-kind="text"><span class="channel-symbol">#</span> café</button>
-          </div>
-          <div class="channel-section">
-            <div class="section-title"><span>CANAIS DE VOZ</span><button aria-label="Criar canal">+</button></div>
-            <button class="channel voice-channel" data-room="lobby" data-kind="voice"><span class="channel-symbol">◖</span> Lobby</button>
-            <button class="channel voice-channel" data-room="jogos" data-kind="voice"><span class="channel-symbol">◖</span> Jogatina</button>
-            <button class="channel voice-channel" data-room="musica" data-kind="voice"><span class="channel-symbol">◖</span> Música & chill</button>
-          </div>
-        </nav>
-
-        <div id="connection-panel" class="connection-panel is-hidden">
-          <div>
-            <strong>Voz conectada</strong>
-            <span id="connected-room">Lobby</span>
-          </div>
-          <button id="disconnect-compact" class="icon-button danger" title="Desconectar" aria-label="Desconectar">↗</button>
-        </div>
-
-        <footer class="profile-bar">
-          <div id="profile-avatar" class="avatar self-avatar">V</div>
-          <div class="profile-copy">
-            <strong id="profile-name">Visitante</strong>
-            <span id="profile-status">Disponível</span>
-          </div>
-          <button id="mic-compact" class="icon-button" title="Microfone" aria-label="Microfone">♩</button>
-          <button id="settings-button" class="icon-button" title="Configurações" aria-label="Abrir configurações">⚙</button>
-        </footer>
-      </aside>
-
-      <main class="main-panel">
-        <header class="topbar">
-          <div class="room-heading">
-            <span id="room-symbol" class="room-symbol">#</span>
-            <div>
-              <h2 id="room-name">geral</h2>
-              <span id="room-description">Conversa livre para todo mundo</span>
-            </div>
-          </div>
-          <div class="topbar-actions">
-            <span id="network-status" class="network-status"><span class="status-dot"></span> Conectado</span>
-            <button id="toggle-members" class="icon-button desktop-only" title="Participantes" aria-label="Participantes">☷</button>
-          </div>
-        </header>
-
-        <section id="call-stage" class="call-stage is-hidden" aria-label="Chamada">
-          <div class="call-topline">
-            <div>
-              <span class="live-pill"><span></span> AO VIVO</span>
-              <h3 id="call-title">Lobby</h3>
-            </div>
-            <div class="call-view-actions">
-              <button id="layout-button" class="call-view-button" title="Alternar visualização" aria-label="Alternar visualização"><span>▦</span><small>Grade</small></button>
-              <button id="fullscreen-button" class="call-view-button" title="Chamada em tela cheia" aria-label="Chamada em tela cheia"><span>⛶</span><small>Tela cheia</small></button>
-              <button id="minimize-call" class="icon-button" title="Minimizar chamada" aria-label="Minimizar chamada">⌃</button>
-            </div>
-          </div>
-          <div id="video-grid" class="video-grid"></div>
-          <div class="call-controls">
-            <button id="mic-button" class="control-button" aria-label="Alternar microfone"><span>♩</span><small>Microfone</small></button>
-            <button id="camera-button" class="control-button" aria-label="Alternar câmera"><span>▣</span><small>Câmera</small></button>
-            <button id="screen-button" class="control-button primary" aria-label="Compartilhar tela"><span>▱</span><small>Compartilhar</small></button>
-            <button id="leave-button" class="control-button hangup" aria-label="Sair da chamada"><span>×</span><small>Sair</small></button>
-          </div>
+      <div class="channel-scroll">
+        <section class="channel-group">
+          <h2>CANAIS DE TEXTO</h2>
+          <button class="channel text-channel active" data-text-room="geral"><span>#</span> geral</button>
+          <button class="channel text-channel" data-text-room="projetos"><span>#</span> projetos</button>
+          <button class="channel text-channel" data-text-room="cafe"><span>#</span> café</button>
         </section>
 
-        <section class="chat-area">
-          <div id="messages" class="messages" aria-live="polite"></div>
-          <form id="message-form" class="message-composer">
-            <button type="button" class="attach-button" aria-label="Adicionar arquivo">+</button>
-            <textarea id="message-input" rows="1" maxlength="2000" placeholder="Conversar em #geral" aria-label="Mensagem"></textarea>
-            <button id="send-button" class="send-button" type="submit" aria-label="Enviar mensagem">➤</button>
-          </form>
+        <section class="channel-group voice-group">
+          <h2>CANAIS DE VOZ</h2>
+          <button class="channel voice-channel" data-voice-room="lobby"><span data-icon="volume"></span> Lobby</button>
+          <div class="voice-users" data-voice-users="lobby"></div>
+          <button class="channel voice-channel" data-voice-room="jogos"><span data-icon="volume"></span> Jogatina</button>
+          <div class="voice-users" data-voice-users="jogos"></div>
+          <button class="channel voice-channel" data-voice-room="musica"><span data-icon="volume"></span> Música</button>
+          <div class="voice-users" data-voice-users="musica"></div>
         </section>
-      </main>
+      </div>
 
-      <aside id="members-panel" class="members-panel">
-        <div class="members-header">
-          <h3>Na sala — <span id="member-count">1</span></h3>
+      <div id="connection-panel" class="connection-panel hidden">
+        <div><span class="connection-bars"></span><strong>Voz conectada</strong></div>
+        <button id="disconnect-voice" class="icon-button danger" title="Desconectar" aria-label="Desconectar"><span data-icon="phone-off"></span></button>
+        <small id="connected-room">Lobby</small>
+      </div>
+
+      <footer class="user-bar">
+        <button id="profile-button" class="avatar avatar-button" aria-label="Editar perfil"><img id="profile-avatar" alt=""><span id="profile-fallback">EU</span></button>
+        <div class="self-info"><strong id="self-name">Visitante</strong><small id="self-status">Disponível</small></div>
+        <button id="bar-mic" class="icon-button" title="Microfone" aria-label="Microfone"><span data-icon="mic"></span></button>
+        <button id="bar-deafen" class="icon-button" title="Silenciar fone" aria-label="Silenciar fone"><span data-icon="headphones"></span></button>
+        <button id="open-settings" class="icon-button" title="Configurações" aria-label="Configurações"><span data-icon="settings"></span></button>
+      </footer>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div class="channel-title"><span>#</span><strong id="room-title">geral</strong></div>
+        <div class="top-actions">
+          <button id="toggle-member-list" class="icon-button active" title="Lista de membros"><span data-icon="members"></span></button>
         </div>
-        <div id="members-list" class="members-list"></div>
-        <div class="invite-card">
-          <div class="invite-icon">✦</div>
-          <strong>Traga sua galera</strong>
-          <span>Abra este endereço em outra janela ou computador.</span>
-          <button id="copy-invite">Copiar convite</button>
-        </div>
-      </aside>
-    </div>
+      </header>
 
-    <div id="welcome-modal" class="modal-backdrop">
-      <form id="welcome-form" class="welcome-card">
-        <div class="welcome-logo">C</div>
-        <span class="eyebrow">BEM-VINDO AO CONCORD</span>
-        <h2>Um lugar para ficar junto.</h2>
-        <p>Entre com um nome para conversar e testar chamadas com outras pessoas na sua rede.</p>
-        <label for="name-input">Como devemos chamar você?</label>
-        <input id="name-input" maxlength="32" autocomplete="nickname" placeholder="Seu nome" required />
-        <button type="submit">Entrar no Concord <span>→</span></button>
-        <small>Nenhuma conta é necessária.</small>
-      </form>
-    </div>
-
-    <div id="toast-region" class="toast-region" aria-live="polite"></div>
-
-    <div id="source-modal" class="modal-backdrop is-hidden">
-      <section class="source-card" role="dialog" aria-modal="true" aria-labelledby="source-title">
-        <div class="source-card-header">
-          <div>
-            <span class="eyebrow">COMPARTILHAR TELA</span>
-            <h2 id="source-title">O que você quer mostrar?</h2>
+      <section id="call-stage" class="call-stage hidden">
+        <div class="call-toolbar">
+          <div><strong id="call-title">Lobby</strong><small id="call-status">Preparando chamada…</small></div>
+          <div class="call-toolbar-actions">
+            <button id="layout-button" class="toolbar-button" title="Alternar grade e foco"><span data-icon="grid"></span><span>Grade</span></button>
+            <button id="participant-video-button" class="toolbar-button active" title="Mostrar vídeos dos participantes"><span data-icon="video"></span><span>Vídeos</span></button>
+            <button id="self-view-button" class="toolbar-button active" title="Mostrar minha câmera"><span data-icon="eye"></span><span>Minha visão</span></button>
+            <button id="fullscreen-button" class="toolbar-button" title="Tela cheia"><span data-icon="fullscreen"></span><span>Tela cheia</span></button>
           </div>
-          <button id="close-source-modal" class="icon-button" aria-label="Fechar">×</button>
         </div>
-        <div id="source-grid" class="source-grid"></div>
-        <p>Escolha uma tela ou janela. Você poderá interromper o compartilhamento a qualquer momento.</p>
+
+        <div id="video-grid" class="video-grid"></div>
+
+        <div id="annotation-toolbar" class="annotation-toolbar hidden" aria-label="Ferramentas de desenho">
+          <span>Desenhar na tela</span>
+          <button class="color-dot active" data-draw-color="#ff5d8f" style="--dot:#ff5d8f" aria-label="Rosa"></button>
+          <button class="color-dot" data-draw-color="#5dd6ff" style="--dot:#5dd6ff" aria-label="Azul"></button>
+          <button class="color-dot" data-draw-color="#ffd166" style="--dot:#ffd166" aria-label="Amarelo"></button>
+          <button class="color-dot" data-draw-color="#7bf1a8" style="--dot:#7bf1a8" aria-label="Verde"></button>
+          <button id="clear-drawings" class="toolbar-button"><span data-icon="trash"></span><span>Limpar</span></button>
+        </div>
+
+        <div class="call-controls">
+          <button id="call-mic" class="round-control" title="Microfone"><span data-icon="mic"></span></button>
+          <button id="call-deafen" class="round-control" title="Silenciar fone"><span data-icon="headphones"></span></button>
+          <button id="call-camera" class="round-control" title="Câmera"><span data-icon="video"></span></button>
+          <button id="call-screen" class="round-control" title="Compartilhar tela"><span data-icon="screen"></span></button>
+          <button id="call-draw" class="round-control" title="Permitir desenhos"><span data-icon="pencil"></span></button>
+          <button id="leave-call" class="round-control hangup" title="Sair da chamada"><span data-icon="phone-off"></span></button>
+        </div>
       </section>
-    </div>
 
-    <div id="settings-modal" class="settings-backdrop is-hidden">
-      <section class="settings-card" role="dialog" aria-modal="true" aria-labelledby="settings-title">
-        <aside class="settings-nav">
-          <div class="settings-brand"><span>C</span><strong>Concord</strong></div>
-          <p>CONFIGURAÇÕES</p>
-          <button class="settings-tab active" data-settings-target="account-settings">Minha conta</button>
-          <button class="settings-tab" data-settings-target="voice-settings">Voz e áudio</button>
-          <button class="settings-tab" data-settings-target="video-settings">Vídeo e tela</button>
-          <button class="settings-tab" data-settings-target="appearance-settings">Aparência</button>
-          <div class="settings-nav-spacer"></div>
-          <button id="reset-settings" class="settings-tab danger-text">Restaurar padrões</button>
-        </aside>
-
-        <main class="settings-content">
-          <button id="close-settings" class="settings-close" aria-label="Fechar configurações"><span>×</span><small>ESC</small></button>
-
-          <section id="account-settings" class="settings-section active">
-            <span class="eyebrow">MINHA CONTA</span>
-            <h2 id="settings-title">Seu perfil no Concord</h2>
-            <p class="settings-lead">Escolha como seu nome aparece nas salas.</p>
-            <div class="account-preview">
-              <div id="settings-avatar" class="settings-avatar">V</div>
-              <div><strong id="settings-preview-name">Visitante</strong><span>Disponível</span></div>
-            </div>
-            <label class="field-label" for="settings-name-input">Nome de exibição</label>
-            <div class="inline-field">
-              <input id="settings-name-input" maxlength="32" autocomplete="nickname" />
-              <button id="save-profile" class="primary-action" type="button">Salvar</button>
-            </div>
-            <p id="name-settings-hint" class="field-hint">O nome é mostrado para todo mundo na sala.</p>
-          </section>
-
-          <section id="voice-settings" class="settings-section">
-            <span class="eyebrow">VOZ E ÁUDIO</span>
-            <h2>Microfone e saída de som</h2>
-            <p class="settings-lead">Ajuste os dispositivos e veja o medidor reagir à sua voz.</p>
-            <div class="settings-grid two-columns">
-              <label class="settings-field">Dispositivo de entrada<select id="microphone-select"></select></label>
-              <label class="settings-field">Dispositivo de saída<select id="speaker-select"></select></label>
-            </div>
-            <div class="mic-test-card">
-              <div class="mic-test-copy"><strong>Teste do microfone</strong><span id="mic-test-status">Fale para conferir seu volume</span></div>
-              <div class="level-meter" aria-label="Nível do microfone"><span id="mic-level-fill"></span></div>
-              <button id="mic-test-button" class="secondary-action" type="button">Testar</button>
-            </div>
-            <label class="range-field" for="sensitivity-range">
-              <span><strong>Sensibilidade de entrada</strong><output id="sensitivity-value">55%</output></span>
-              <input id="sensitivity-range" type="range" min="0" max="100" step="1" />
-              <small>Quanto maior, mais facilmente o Concord detecta que você está falando.</small>
-            </label>
-            <div class="toggle-list">
-              <label><span><strong>Supressão de ruído</strong><small>Ajuda a remover sons constantes do ambiente.</small></span><input id="noise-suppression" type="checkbox" /><i></i></label>
-              <label><span><strong>Cancelamento de eco</strong><small>Reduz o retorno do som dos alto-falantes.</small></span><input id="echo-cancellation" type="checkbox" /><i></i></label>
-              <label><span><strong>Ganho automático</strong><small>Equilibra automaticamente o volume da voz.</small></span><input id="auto-gain" type="checkbox" /><i></i></label>
-            </div>
-          </section>
-
-          <section id="video-settings" class="settings-section">
-            <span class="eyebrow">VÍDEO E TELA</span>
-            <h2>Câmera e compartilhamento</h2>
-            <p class="settings-lead">Defina a qualidade e como as transmissões aparecem na chamada.</p>
-            <div class="settings-grid two-columns">
-              <label class="settings-field">Câmera<select id="camera-select"></select></label>
-              <label class="settings-field">Qualidade do compartilhamento
-                <select id="share-quality">
-                  <option value="720">Equilibrada — 720p</option>
-                  <option value="1080">Alta — 1080p</option>
-                  <option value="1440">Muito alta — 1440p</option>
-                </select>
-              </label>
-            </div>
-            <div class="toggle-list">
-              <label><span><strong>Priorizar compartilhamentos</strong><small>Coloca automaticamente uma tela compartilhada em destaque.</small></span><input id="auto-focus-shares" type="checkbox" /><i></i></label>
-            </div>
-            <div class="layout-picker" role="group" aria-label="Visualização padrão">
-              <p>VISUALIZAÇÃO PADRÃO</p>
-              <button class="layout-choice" data-layout-choice="grid" type="button"><span>▦</span><strong>Grade</strong><small>Todos aparecem com o mesmo tamanho.</small></button>
-              <button class="layout-choice" data-layout-choice="focus" type="button"><span>▰</span><strong>Destaque</strong><small>Uma transmissão grande e as outras menores.</small></button>
-            </div>
-          </section>
-
-          <section id="appearance-settings" class="settings-section">
-            <span class="eyebrow">APARÊNCIA</span>
-            <h2>Deixe do seu jeito</h2>
-            <p class="settings-lead">Escolha a cor do Concord e a densidade da interface.</p>
-            <div class="accent-picker" role="group" aria-label="Cor de destaque">
-              <button class="accent-choice purple" data-accent="purple" aria-label="Roxo" type="button"></button>
-              <button class="accent-choice blue" data-accent="blue" aria-label="Azul" type="button"></button>
-              <button class="accent-choice green" data-accent="green" aria-label="Verde" type="button"></button>
-              <button class="accent-choice pink" data-accent="pink" aria-label="Rosa" type="button"></button>
-            </div>
-            <div class="toggle-list">
-              <label><span><strong>Modo compacto</strong><small>Reduz os espaços para caber mais conteúdo.</small></span><input id="compact-mode" type="checkbox" /><i></i></label>
-            </div>
-          </section>
-        </main>
+      <section class="chat-area">
+        <div id="messages" class="messages" aria-live="polite"></div>
+        <form id="message-form" class="composer">
+          <textarea id="message-input" rows="1" maxlength="2000" placeholder="Conversar em #geral" aria-label="Mensagem"></textarea>
+          <button type="submit" class="send-button" title="Enviar"><span data-icon="send"></span></button>
+        </form>
       </section>
-    </div>
-    <script src="/app.js" defer></script>
-  </body>
+    </main>
+
+    <aside id="member-panel" class="member-panel">
+      <h2>NO CANAL — <span id="member-count">0</span></h2>
+      <div id="member-list" class="member-list"></div>
+      <p class="member-tip">Clique com o botão direito em alguém na chamada para controlar volume, vídeo e foco.</p>
+    </aside>
+  </div>
+
+  <div id="settings-overlay" class="settings-overlay hidden" role="dialog" aria-modal="true" aria-label="Configurações">
+    <aside class="settings-nav">
+      <div class="settings-nav-inner">
+        <strong>CONFIGURAÇÕES</strong>
+        <button class="settings-tab active" data-settings-tab="account">Minha conta</button>
+        <button class="settings-tab" data-settings-tab="voice">Voz e áudio</button>
+        <button class="settings-tab" data-settings-tab="video">Vídeo e tela</button>
+        <button class="settings-tab" data-settings-tab="appearance">Aparência</button>
+      </div>
+    </aside>
+    <section class="settings-content">
+      <button id="close-settings" class="close-settings" aria-label="Fechar"><span data-icon="close"></span><small>ESC</small></button>
+
+      <div class="settings-page active" data-settings-page="account">
+        <h1>Minha conta</h1>
+        <div class="account-card">
+          <div class="avatar avatar-xl"><img id="settings-avatar" alt=""><span id="settings-avatar-fallback">EU</span></div>
+          <div><h2 id="settings-name-display">Visitante</h2><p>Sua identidade no Concord</p></div>
+        </div>
+        <label class="field-label" for="display-name">Nome de exibição</label>
+        <input id="display-name" maxlength="32" autocomplete="nickname">
+        <div class="button-row">
+          <label class="primary-button file-button">Escolher foto<input id="avatar-input" type="file" accept="image/png,image/jpeg,image/webp"></label>
+          <button id="remove-avatar" class="secondary-button">Remover foto</button>
+          <button id="save-profile" class="primary-button">Salvar perfil</button>
+        </div>
+        <p id="profile-feedback" class="settings-feedback"></p>
+      </div>
+
+      <div class="settings-page" data-settings-page="voice">
+        <h1>Voz e áudio</h1>
+        <div class="settings-grid two">
+          <label>Dispositivo de entrada<select id="input-device"><option value="default">Padrão do sistema</option></select></label>
+          <label>Dispositivo de saída<select id="output-device"><option value="default">Padrão do sistema</option></select></label>
+        </div>
+        <label class="range-field">Volume geral dos outros <output id="master-volume-value">100%</output><input id="master-volume" type="range" min="0" max="200" value="100"></label>
+        <label class="range-field">Sensibilidade do indicador <output id="sensitivity-value">12%</output><input id="mic-sensitivity" type="range" min="2" max="45" value="12"></label>
+        <div class="test-card">
+          <div><strong>Teste do microfone</strong><p>Use fones para evitar eco. Durante o teste você ouvirá sua própria voz.</p></div>
+          <button id="loopback-button" class="secondary-button"><span data-icon="mic"></span> Iniciar teste</button>
+          <div class="meter"><span id="settings-meter"></span></div>
+          <audio id="mic-loopback-audio" autoplay></audio>
+        </div>
+        <h2>Processamento do microfone</h2>
+        <label class="switch-row"><span><strong>Supressão de ruído</strong><small id="noise-status">Verificando suporte…</small></span><input id="noise-suppression" type="checkbox" checked><i></i></label>
+        <label class="switch-row"><span><strong>Cancelamento de eco</strong><small id="echo-status">Verificando suporte…</small></span><input id="echo-cancellation" type="checkbox" checked><i></i></label>
+        <label class="switch-row"><span><strong>Controle automático de ganho</strong><small id="gain-status">Verificando suporte…</small></span><input id="auto-gain" type="checkbox" checked><i></i></label>
+      </div>
+
+      <div class="settings-page" data-settings-page="video">
+        <h1>Vídeo e compartilhamento</h1>
+        <label class="switch-row"><span><strong>Mostrar vídeos dos participantes</strong><small>Ocultar vídeo não corta o áudio.</small></span><input id="setting-participant-video" type="checkbox" checked><i></i></label>
+        <label class="switch-row"><span><strong>Mostrar minha câmera</strong><small>Exibe ou esconde seu quadro local.</small></span><input id="setting-self-view" type="checkbox" checked><i></i></label>
+        <label class="switch-row"><span><strong>Preview da minha tela</strong><small>Mostra localmente aquilo que você está compartilhando.</small></span><input id="setting-screen-preview" type="checkbox" checked><i></i></label>
+        <label class="switch-row"><span><strong>Permitir desenhos</strong><small>Participantes podem desenhar por cima da sua tela.</small></span><input id="setting-annotations" type="checkbox" checked><i></i></label>
+        <label class="switch-row"><span><strong>Priorizar tela compartilhada</strong><small>Muda automaticamente para o modo foco.</small></span><input id="setting-auto-focus" type="checkbox" checked><i></i></label>
+        <label>Câmera<select id="camera-device"><option value="default">Padrão do sistema</option></select></label>
+        <div class="settings-grid two">
+          <label>Qualidade da câmera<select id="camera-quality"><option value="480">480p</option><option value="720" selected>720p</option><option value="1080">1080p</option></select></label>
+          <label>Qualidade da tela<select id="screen-quality"><option value="720">720p</option><option value="1080" selected>1080p</option><option value="1440">1440p</option></select></label>
+        </div>
+      </div>
+
+      <div class="settings-page" data-settings-page="appearance">
+        <h1>Aparência</h1>
+        <label>Cor de destaque<input id="accent-color" type="color" value="#8b5cf6"></label>
+        <label class="switch-row"><span><strong>Modo compacto</strong><small>Reduz o espaço das mensagens e painéis.</small></span><input id="compact-mode" type="checkbox"><i></i></label>
+      </div>
+    </section>
+  </div>
+
+  <div id="context-menu" class="context-menu hidden" role="menu"></div>
+  <div id="toast-stack" class="toast-stack" aria-live="polite"></div>
+  <script src="/app.js" defer></script>
+</body>
 </html>
 
