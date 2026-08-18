@@ -1,3 +1,4 @@
+# Concord 0.3 — configuração do serviço público
 services:
   - type: web
     name: lume-app
