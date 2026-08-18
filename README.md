@@ -1,6 +1,6 @@
 # Concord
 
-MVP de uma comunidade em tempo real inspirado na experiência de aplicativos como o Discord. Inclui canais, chat, presença, chamadas P2P, câmera, microfone e compartilhamento de tela. O projeto pode ser usado no navegador ou como aplicativo desktop.
+Comunidade em tempo real inspirada na experiência de aplicativos como o Discord. Inclui canais, chat, presença global, chamadas P2P, câmera, microfone, compartilhamento de tela e desenho colaborativo. O projeto pode ser usado no navegador ou como aplicativo desktop.
 
 ## Aplicativo desktop
 
@@ -33,21 +33,23 @@ Alguns navegadores só liberam câmera, microfone e compartilhamento de tela em 
 ## O que esta versão já faz
 
 - Canais de texto com histórico recente em memória.
-- Lista de pessoas conectadas em cada sala.
-- Salas de voz com áudio e vídeo via WebRTC.
-- Ativar/desativar microfone e câmera.
-- Compartilhar a tela durante a chamada.
-- Destaque automático de compartilhamentos, visualização em grade e tela cheia.
-- Indicador visual de quem está falando e medidor de microfone.
-- Configurações de entrada, saída, câmera, sensibilidade e qualidade de transmissão.
-- Copiar um link de convite.
+- Lista de pessoas conectadas no texto e em cada canal de voz.
+- Áudio e vídeo via WebRTC com STUN/TURN, reconexão e renegociação automáticas.
+- Microfone, câmera, ensurdecimento do fone e volume geral ou individual.
+- Menu por participante no botão direito para silenciar, ajustar volume, esconder vídeo ou priorizar.
+- Compartilhamento de tela com preview local opcional.
+- Desenho colaborativo sincronizado por cima da tela compartilhada.
+- Destaque automático de compartilhamentos, visualização em grade, modo foco e tela cheia.
+- Indicador visual de quem está falando e teste real de retorno do microfone.
+- Supressão de ruído, cancelamento de eco e controle de ganho aplicados às trilhas compatíveis.
+- Foto de perfil e configurações de entrada, saída, câmera e qualidade de transmissão.
 - Interface responsiva sem dependências externas.
 
 ## Limitações intencionais do MVP
 
 - Contas, servidores e mensagens não são salvos em banco de dados.
 - As chamadas usam conexão P2P, adequada para pequenos grupos.
-- Para funcionar bem pela internet, será necessário adicionar HTTPS e um servidor TURN.
+- O TURN público incluído é um fallback gratuito; para disponibilidade garantida, configure credenciais próprias pelas variáveis `TURN_URLS`, `TURN_USERNAME` e `TURN_CREDENTIAL` no Render.
 - Para grupos maiores, a chamada deve migrar de P2P para uma arquitetura SFU.
 
 ## Próximas etapas sugeridas
