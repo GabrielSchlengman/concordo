@@ -76,13 +76,31 @@
 
         <div id="video-grid" class="video-grid"></div>
 
-        <div id="annotation-toolbar" class="annotation-toolbar hidden" aria-label="Ferramentas de desenho">
-          <span>Desenhar na tela</span>
-          <button class="color-dot active" data-draw-color="#ff5d8f" style="--dot:#ff5d8f" aria-label="Rosa"></button>
-          <button class="color-dot" data-draw-color="#5dd6ff" style="--dot:#5dd6ff" aria-label="Azul"></button>
-          <button class="color-dot" data-draw-color="#ffd166" style="--dot:#ffd166" aria-label="Amarelo"></button>
-          <button class="color-dot" data-draw-color="#7bf1a8" style="--dot:#7bf1a8" aria-label="Verde"></button>
-          <button id="clear-drawings" class="toolbar-button"><span data-icon="trash"></span><span>Limpar</span></button>
+        <div id="annotation-toolbar" class="annotation-toolbar hidden" aria-label="Ferramentas de anotação">
+          <header>
+            <div><strong>Anotar na tela</strong><small id="annotation-target">Nenhuma tela selecionada</small></div>
+            <button id="close-annotation" class="icon-button" aria-label="Fechar ferramentas"><span data-icon="close"></span></button>
+          </header>
+          <div class="annotation-tools">
+            <button class="annotation-tool active" data-draw-tool="pen" title="Caneta"><span data-icon="pencil"></span><small>Caneta</small></button>
+            <button class="annotation-tool" data-draw-tool="eraser" title="Borracha"><span data-icon="eraser"></span><small>Borracha</small></button>
+            <button class="annotation-tool" data-draw-tool="text" title="Escrever"><span data-icon="text"></span><small>Texto</small></button>
+            <label class="draw-size">Tamanho<input id="draw-size" type="range" min="2" max="24" value="4"></label>
+          </div>
+          <div class="annotation-colors">
+            <button class="color-dot active" data-draw-color="#ff5d8f" style="--dot:#ff5d8f" aria-label="Rosa"></button>
+            <button class="color-dot" data-draw-color="#5dd6ff" style="--dot:#5dd6ff" aria-label="Azul"></button>
+            <button class="color-dot" data-draw-color="#ffd166" style="--dot:#ffd166" aria-label="Amarelo"></button>
+            <button class="color-dot" data-draw-color="#7bf1a8" style="--dot:#7bf1a8" aria-label="Verde"></button>
+            <button class="color-dot" data-draw-color="#ffffff" style="--dot:#ffffff" aria-label="Branco"></button>
+            <button id="undo-drawing" class="toolbar-button"><span data-icon="undo"></span><span>Desfazer</span></button>
+            <button id="clear-drawings" class="toolbar-button danger-tool"><span data-icon="trash"></span><span>Apagar tudo</span></button>
+          </div>
+          <label id="annotation-permission-row" class="annotation-permission hidden">
+            <span><strong>Participantes podem desenhar</strong><small>Você controla sua tela.</small></span>
+            <input id="allow-annotations" type="checkbox" checked><i></i>
+          </label>
+          <p id="annotation-help">Clique e arraste sobre a tela compartilhada.</p>
         </div>
 
         <div class="call-controls">
@@ -90,17 +108,22 @@
           <button id="call-deafen" class="round-control" title="Silenciar fone"><span data-icon="headphones"></span></button>
           <button id="call-camera" class="round-control" title="Câmera"><span data-icon="video"></span></button>
           <button id="call-screen" class="round-control" title="Compartilhar tela"><span data-icon="screen"></span></button>
-          <button id="call-draw" class="round-control" title="Permitir desenhos"><span data-icon="pencil"></span></button>
+          <button id="call-draw" class="round-control" title="Ferramentas de anotação"><span data-icon="pencil"></span></button>
           <button id="leave-call" class="round-control hangup" title="Sair da chamada"><span data-icon="phone-off"></span></button>
         </div>
       </section>
 
-      <section class="chat-area">
+      <section id="chat-area" class="chat-area">
         <div id="messages" class="messages" aria-live="polite"></div>
+        <div id="attachment-tray" class="attachment-tray hidden"></div>
         <form id="message-form" class="composer">
+          <button id="attach-button" type="button" class="composer-button" title="Enviar foto ou arquivo"><span data-icon="paperclip"></span></button>
+          <input id="file-input" class="hidden" type="file" multiple>
           <textarea id="message-input" rows="1" maxlength="2000" placeholder="Conversar em #geral" aria-label="Mensagem"></textarea>
+          <button id="record-audio" type="button" class="composer-button" title="Gravar mensagem de voz"><span data-icon="waveform"></span><span id="recording-time" class="hidden">0:00</span></button>
           <button type="submit" class="send-button" title="Enviar"><span data-icon="send"></span></button>
         </form>
+        <small class="upload-note">Fotos, áudios e arquivos de até 8 MB · arquivos temporários por até 24 horas</small>
       </section>
     </main>
 
@@ -158,6 +181,10 @@
         <label class="switch-row"><span><strong>Supressão de ruído</strong><small id="noise-status">Verificando suporte…</small></span><input id="noise-suppression" type="checkbox" checked><i></i></label>
         <label class="switch-row"><span><strong>Cancelamento de eco</strong><small id="echo-status">Verificando suporte…</small></span><input id="echo-cancellation" type="checkbox" checked><i></i></label>
         <label class="switch-row"><span><strong>Controle automático de ganho</strong><small id="gain-status">Verificando suporte…</small></span><input id="auto-gain" type="checkbox" checked><i></i></label>
+        <h2>Privacidade e sons</h2>
+        <label class="switch-row"><span><strong>Proteger meu IP na chamada</strong><small>Usa somente o servidor de retransmissão; recomendado.</small></span><input id="protect-ip" type="checkbox" checked><i></i></label>
+        <label class="switch-row"><span><strong>Sons da chamada</strong><small>Entrada, saída, tela, microfone e fone.</small></span><input id="call-sounds" type="checkbox" checked><i></i></label>
+        <label class="range-field">Volume dos sons <output id="sound-volume-value">45%</output><input id="sound-volume" type="range" min="0" max="100" value="45"></label>
       </div>
 
       <div class="settings-page" data-settings-page="video">
@@ -187,4 +214,3 @@
   <script src="/app.js" defer></script>
 </body>
 </html>
-

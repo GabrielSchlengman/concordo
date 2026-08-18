@@ -1,10 +1,14 @@
 const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
+const crypto = require('node:crypto');
 const { URL } = require('node:url');
 
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const MAX_BODY_BYTES = 384 * 1024;
+const MAX_UPLOAD_BYTES = 8 * 1024 * 1024;
+const MAX_FILE_STORE_BYTES = 64 * 1024 * 1024;
+const MAX_ATTACHMENTS_PER_MESSAGE = 5;
 const MAX_CLIENTS = 300;
 const MAX_CLIENTS_PER_ROOM = 150;
 const RECONNECT_GRACE_MS = 8_000;
@@ -13,6 +17,9 @@ const VOICE_ROOMS = new Set(['lobby', 'jogos', 'musica']);
 const rooms = new Map();
 const clients = new Map();
 const requestWindows = new Map();
+const files = new Map();
+const annotationItems = new Map();
+let storedFileBytes = 0;
 
 const securityHeaders = {
   'Content-Security-Policy': "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' https: wss:; style-src 'self' 'unsafe-inline'; script-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
@@ -52,6 +59,39 @@ function cleanAvatar(value) {
   if (!avatar) return '';
   if (avatar.length > 140_000) return '';
   return /^data:image\/(?:png|jpe?g|webp);base64,[a-zA-Z0-9+/=]+$/.test(avatar) ? avatar : '';
+}
+
+function cleanFileName(value) {
+  let name;
+  try { name = decodeURIComponent(String(value || 'arquivo')); } catch { name = String(value || 'arquivo'); }
+  return name.replace(/[\u0000-\u001f<>:"/\\|?*]/g, '_').replace(/\s+/g, ' ').trim().slice(0, 120) || 'arquivo';
+}
+
+function cleanMime(value) {
+  const mime = String(value || '').split(';')[0].trim().toLowerCase().slice(0, 100);
+  return /^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/.test(mime) ? mime : 'application/octet-stream';
+}
+
+function isInlineMime(mime) {
+  return /^(?:image\/(?:png|jpe?g|gif|webp)|audio\/(?:mpeg|ogg|wav|webm|mp4|x-m4a))$/.test(mime);
+}
+
+function publicAttachment(file) {
+  return { id: file.id, name: file.name, mime: file.mime, size: file.size, url: `/api/files/${file.id}` };
+}
+
+function pruneFiles() {
+  const expiry = Date.now() - (24 * 60 * 60 * 1000);
+  for (const [id, file] of files) {
+    if (file.createdAt < expiry || storedFileBytes > MAX_FILE_STORE_BYTES || files.size > 200) {
+      files.delete(id); storedFileBytes -= file.size;
+    }
+  }
+}
+
+function annotationStore(ownerId) {
+  if (!annotationItems.has(ownerId)) annotationItems.set(ownerId, new Map());
+  return annotationItems.get(ownerId);
 }
 
 function cleanMediaState(value) {
@@ -173,6 +213,40 @@ function readJson(request) {
   });
 }
 
+function readBuffer(request, limit = MAX_UPLOAD_BYTES) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    request.on('data', (chunk) => {
+      size += chunk.length;
+      if (size > limit) {
+        reject(new Error('O arquivo ultrapassa o limite de 8 MB.'));
+        request.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    request.on('end', () => resolve(Buffer.concat(chunks)));
+    request.on('error', reject);
+  });
+}
+
+function serveFile(requestUrl, response) {
+  const id = cleanId(requestUrl.pathname.split('/').pop(), '');
+  const file = files.get(id);
+  if (!file) { json(response, 404, { error: 'Este arquivo expirou ou não existe mais.' }); return; }
+  const inline = isInlineMime(file.mime) && requestUrl.searchParams.get('download') !== '1';
+  response.writeHead(200, {
+    ...securityHeaders,
+    'Content-Type': inline ? file.mime : 'application/octet-stream',
+    'Content-Length': file.size,
+    'Content-Disposition': `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(file.name)}`,
+    'Cross-Origin-Resource-Policy': 'same-origin',
+    'Cache-Control': 'private, max-age=3600',
+  });
+  response.end(file.data);
+}
+
 function serveStatic(requestUrl, response) {
   const pathname = requestUrl.pathname === '/' ? '/index.html' : requestUrl.pathname;
   const relativePath = path.normalize(decodeURIComponent(pathname)).replace(/^(\.\.[/\\])+/, '');
@@ -216,7 +290,11 @@ function scheduleDisconnect(clientId, response) {
     const voiceRoom = current.voiceRoom;
     getRoom(textRoom).clients.delete(clientId);
     clients.delete(clientId);
-    if (voiceRoom) broadcastVoiceRoom(voiceRoom, { type: 'peer-left', id: clientId }, clientId);
+    if (voiceRoom) {
+      if (current.media?.screenSharing) broadcastVoiceRoom(voiceRoom, { type: 'annotation', action: 'clear', shareOwnerId: clientId, from: clientId }, clientId);
+      annotationItems.delete(clientId);
+      broadcastVoiceRoom(voiceRoom, { type: 'peer-left', id: clientId }, clientId);
+    }
     sendTextPresence(textRoom);
     sendVoiceState();
   }, RECONNECT_GRACE_MS);
@@ -256,12 +334,17 @@ function createServer() {
     }
 
     if (request.method === 'GET' && requestUrl.pathname === '/api/health') {
-      json(response, 200, { ok: true, name: 'Concord', version: '0.4.0' });
+      json(response, 200, { ok: true, name: 'Concord', version: '0.5.0' });
       return;
     }
 
     if (request.method === 'GET' && requestUrl.pathname === '/api/ice') {
       json(response, 200, { iceServers: iceServers() });
+      return;
+    }
+
+    if (request.method === 'GET' && requestUrl.pathname.startsWith('/api/files/')) {
+      serveFile(requestUrl, response);
       return;
     }
 
@@ -333,6 +416,27 @@ function createServer() {
       return;
     }
 
+    if (request.method === 'POST' && requestUrl.pathname === '/api/upload') {
+      if (isRateLimited(request)) { json(response, 429, { error: 'Muitos envios em pouco tempo. Aguarde um minuto.' }); return; }
+      const clientId = cleanId(requestUrl.searchParams.get('clientId'));
+      const client = clients.get(clientId);
+      if (!client) { json(response, 409, { error: 'Reconecte-se e tente novamente.' }); return; }
+      const declaredSize = Number(request.headers['content-length']) || 0;
+      if (declaredSize > MAX_UPLOAD_BYTES) { json(response, 413, { error: 'O arquivo ultrapassa o limite de 8 MB.' }); return; }
+      try {
+        const data = await readBuffer(request);
+        if (!data.length) { json(response, 400, { error: 'O arquivo está vazio.' }); return; }
+        const file = {
+          id: crypto.randomBytes(18).toString('hex'), clientId, room: client.textRoom,
+          name: cleanFileName(request.headers['x-file-name']), mime: cleanMime(request.headers['content-type']),
+          size: data.length, data, createdAt: Date.now(),
+        };
+        files.set(file.id, file); storedFileBytes += file.size; pruneFiles();
+        json(response, 201, { ok: true, attachment: publicAttachment(file), expiresInHours: 24 });
+      } catch (error) { if (!response.writableEnded) json(response, 400, { error: error.message || 'Falha no envio.' }); }
+      return;
+    }
+
     if (request.method === 'POST' && requestUrl.pathname.startsWith('/api/')) {
       if (isRateLimited(request)) {
         json(response, 429, { error: 'Muitas ações em pouco tempo. Aguarde um minuto.' });
@@ -350,7 +454,9 @@ function createServer() {
         if (requestUrl.pathname === '/api/message') {
           const roomId = cleanRoom(body.room || client.textRoom);
           const text = String(body.text || '').trim().slice(0, 2000);
-          if (!text) {
+          const attachmentIds = Array.isArray(body.attachments) ? body.attachments.slice(0, MAX_ATTACHMENTS_PER_MESSAGE).map((id) => cleanId(id)) : [];
+          const attachments = attachmentIds.map((id) => files.get(id)).filter((file) => file?.clientId === clientId && file.room === roomId);
+          if (!text && !attachments.length) {
             json(response, 400, { error: 'Mensagem vazia' });
             return;
           }
@@ -361,6 +467,7 @@ function createServer() {
             name: client.name,
             avatar: client.avatar || '',
             text,
+            attachments: attachments.map(publicAttachment),
             createdAt: new Date().toISOString(),
           };
           room.messages.push(message);
@@ -388,15 +495,33 @@ function createServer() {
             return;
           }
           if (previousVoiceRoom && previousVoiceRoom !== nextVoiceRoom) {
+            if (client.media?.screenSharing) broadcastVoiceRoom(previousVoiceRoom, { type: 'annotation', action: 'clear', shareOwnerId: clientId, from: clientId });
+            annotationItems.delete(clientId);
             broadcastVoiceRoom(previousVoiceRoom, { type: 'peer-left', id: clientId }, clientId);
           }
           client.voiceRoom = nextVoiceRoom;
           client.media = joining ? cleanMediaState(body.media) : cleanMediaState();
           sendVoiceState();
+          if (joining) {
+            for (const [ownerId, store] of annotationItems) {
+              const owner = clients.get(ownerId);
+              if (owner?.voiceRoom !== nextVoiceRoom || !owner.media?.screenSharing || !store.size) continue;
+              writeSse(client.response, {
+                type: 'annotation-sync', shareOwnerId: ownerId,
+                items: [...store.values()].map((entry) => entry.item),
+              });
+            }
+          }
           json(response, 200, {
             ok: true,
             voiceRoom: client.voiceRoom,
             users: client.voiceRoom ? voiceChannelsState()[client.voiceRoom] : [],
+            annotations: client.voiceRoom ? [...annotationItems].flatMap(([ownerId, store]) => {
+              const owner = clients.get(ownerId);
+              return owner?.voiceRoom === client.voiceRoom && owner.media?.screenSharing && store.size
+                ? [{ shareOwnerId: ownerId, items: [...store.values()].map((entry) => entry.item) }]
+                : [];
+            }) : [],
           });
           return;
         }
@@ -406,7 +531,12 @@ function createServer() {
             json(response, 409, { error: 'Você não está em uma chamada.' });
             return;
           }
+          const wasSharing = client.media?.screenSharing === true;
           client.media = cleanMediaState(body.media);
+          if (wasSharing !== client.media.screenSharing) {
+            annotationItems.delete(clientId);
+            broadcastVoiceRoom(client.voiceRoom, { type: 'annotation', action: 'clear', shareOwnerId: clientId, from: clientId });
+          }
           sendVoiceState();
           json(response, 200, { ok: true });
           return;
@@ -431,23 +561,46 @@ function createServer() {
             json(response, 409, { error: 'Compartilhamento indisponível.' });
             return;
           }
-          const action = body.action === 'clear' ? 'clear' : 'stroke';
-          const payload = { type: 'annotation', action, shareOwnerId, from: clientId };
-          if (action === 'stroke') {
-            const rawPoints = Array.isArray(body.stroke?.points) ? body.stroke.points.slice(0, 800) : [];
-            payload.stroke = {
-              id: cleanId(body.stroke?.id, `${Date.now()}`),
-              color: /^#[0-9a-fA-F]{6}$/.test(body.stroke?.color) ? body.stroke.color : '#ff5f6d',
-              width: Math.max(1, Math.min(10, Number(body.stroke?.width) || 3)),
-              points: rawPoints.map((point) => ({
+          const store = annotationStore(shareOwnerId);
+          const requestedAction = String(body.action || 'item');
+          const action = requestedAction === 'clear' ? 'clear' : requestedAction === 'remove' ? 'remove' : 'item';
+          const payload = { type: 'annotation', action, shareOwnerId, from: clientId, authorName: client.name };
+          if (action === 'clear') {
+            if (clientId !== shareOwnerId) { json(response, 403, { error: 'Somente quem compartilha pode apagar tudo.' }); return; }
+            store.clear();
+          } else if (action === 'remove') {
+            const itemId = cleanId(body.itemId);
+            const existingItem = store.get(itemId);
+            if (!existingItem || (existingItem.from !== clientId && clientId !== shareOwnerId)) {
+              json(response, 403, { error: 'Você só pode desfazer suas próprias anotações.' }); return;
+            }
+            store.delete(itemId); payload.itemId = itemId;
+          } else {
+            if (clientId !== shareOwnerId && !shareOwner.media.annotationsEnabled) {
+              json(response, 403, { error: 'Quem está compartilhando desativou as anotações.' }); return;
+            }
+            const source = body.item || body.stroke || {};
+            const tool = source.tool === 'eraser' ? 'eraser' : source.tool === 'text' ? 'text' : 'pen';
+            const item = {
+              id: cleanId(source.id, crypto.randomBytes(12).toString('hex')),
+              tool, color: /^#[0-9a-fA-F]{6}$/.test(source.color) ? source.color : '#ff5d8f',
+              width: Math.max(1, Math.min(36, Number(source.width) || 3)),
+            };
+            if (tool === 'text') {
+              item.text = String(source.text || '').trim().slice(0, 160);
+              item.x = Math.max(0, Math.min(1, Number(source.x) || 0));
+              item.y = Math.max(0, Math.min(1, Number(source.y) || 0));
+              if (!item.text) { json(response, 400, { error: 'Texto vazio.' }); return; }
+            } else {
+              const rawPoints = Array.isArray(source.points) ? source.points.slice(0, 1000) : [];
+              item.points = rawPoints.map((point) => ({
                 x: Math.max(0, Math.min(1, Number(point.x) || 0)),
                 y: Math.max(0, Math.min(1, Number(point.y) || 0)),
-              })),
-            };
-            if (payload.stroke.points.length < 2) {
-              json(response, 400, { error: 'Traço inválido.' });
-              return;
+              }));
+              if (item.points.length < 2) { json(response, 400, { error: 'Traço inválido.' }); return; }
             }
+            if (store.size >= 500) store.delete(store.keys().next().value);
+            store.set(item.id, { from: clientId, authorName: client.name, item }); payload.item = item;
           }
           broadcastVoiceRoom(client.voiceRoom, payload);
           json(response, 201, { ok: true });
@@ -489,4 +642,3 @@ if (require.main === module) {
 }
 
 module.exports = { createServer };
-

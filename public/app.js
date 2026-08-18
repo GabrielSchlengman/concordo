@@ -19,6 +19,12 @@ const ICONS = {
   eye: '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/>',
   fullscreen: '<path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5"/>',
   pencil: '<path d="m18 2 4 4L7 21H3v-4L18 2ZM14 6l4 4"/>',
+  eraser: '<path d="m7 21-4-4L16 4a2.8 2.8 0 0 1 4 4L8 20a3 3 0 0 1-1 .7ZM6 14l5 5M9 21h12"/>',
+  text: '<path d="M5 4h14M12 4v16M8 20h8"/>',
+  undo: '<path d="M9 7 4 12l5 5M4 12h9a7 7 0 0 1 7 7"/>',
+  paperclip: '<path d="m21.4 11.6-8.9 8.9a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 0 1 5.7 5.7l-9.2 9.2a2 2 0 0 1-2.8-2.8l8.5-8.5"/>',
+  waveform: '<path d="M3 10v4M7 7v10M11 3v18M15 8v8M19 5v14M23 10v4"/>',
+  file: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6Z"/><path d="M14 2v6h6M8 13h8M8 17h6"/>',
   trash: '<path d="M3 6h18M8 6V3h8v3M19 6l-1 15H6L5 6M10 11v6M14 11v6"/>',
   send: '<path d="m22 2-7 20-4-9-9-4 20-7ZM11 13 22 2"/>',
   close: '<path d="m6 6 12 12M18 6 6 18"/>',
@@ -35,6 +41,7 @@ const DEFAULTS = {
   noiseSuppression: true, echoCancellation: true, autoGainControl: true,
   participantVideo: true, selfView: true, screenPreview: true,
   annotations: true, autoFocus: true, cameraQuality: '720', screenQuality: '1080',
+  protectIp: true, callSounds: true, soundVolume: 45,
   accent: '#8b5cf6', compact: false,
 };
 
@@ -47,6 +54,9 @@ function loadSettings() {
     if (raw.compactMode !== undefined) settings.compact = Boolean(raw.compactMode);
     if (!/^#[0-9a-f]{6}$/i.test(settings.accent)) settings.accent = DEFAULTS.accent;
     settings.sensitivity = Math.max(2, Math.min(45, Number(settings.sensitivity) || 12));
+    settings.soundVolume = Math.max(0, Math.min(100, Number(settings.soundVolume) || 0));
+    settings.protectIp = settings.protectIp !== false;
+    settings.callSounds = settings.callSounds !== false;
     return settings;
   } catch { return { ...DEFAULTS }; }
 }
@@ -66,17 +76,20 @@ const state = {
   audioContext: null, audioMonitors: new Map(), voiceFrame: null,
   speaking: new Set(), loopbackActive: false, micTestStream: null,
   layout: 'grid', pinnedUserId: null, autoFocusedShareId: null,
-  drawColor: '#ff5d8f', annotations: new Map(), pendingAvatar: null,
+  drawColor: '#ff5d8f', drawTool: 'pen', drawSize: 4, activeShareOwnerId: null,
+  annotationPanelOpen: false, annotations: new Map(), ownAnnotationIds: [], pendingAvatar: null,
+  knownCallUsers: new Map(), callRosterReady: false,
+  pendingFiles: [], recorder: null, recordingStream: null, recordingStartedAt: 0, recordingTimer: null,
 };
 
 const IDS = [
-  'room-title','messages','message-form','message-input','member-count','member-list','toggle-member-list',
+  'room-title','chat-area','messages','message-form','message-input','attachment-tray','attach-button','file-input','record-audio','recording-time','member-count','member-list','toggle-member-list',
   'call-stage','call-title','call-status','video-grid','layout-button','participant-video-button','self-view-button','fullscreen-button',
-  'annotation-toolbar','clear-drawings','call-mic','call-deafen','call-camera','call-screen','call-draw','leave-call',
+  'annotation-toolbar','annotation-target','close-annotation','draw-size','undo-drawing','clear-drawings','annotation-permission-row','allow-annotations','annotation-help','call-mic','call-deafen','call-camera','call-screen','call-draw','leave-call',
   'connection-panel','connected-room','disconnect-voice','profile-button','profile-avatar','profile-fallback','self-name','self-status','bar-mic','bar-deafen','open-settings',
   'settings-overlay','close-settings','settings-avatar','settings-avatar-fallback','settings-name-display','display-name','avatar-input','remove-avatar','save-profile','profile-feedback',
   'input-device','output-device','master-volume','master-volume-value','mic-sensitivity','sensitivity-value','loopback-button','settings-meter','mic-loopback-audio',
-  'noise-suppression','noise-status','echo-cancellation','echo-status','auto-gain','gain-status',
+  'noise-suppression','noise-status','echo-cancellation','echo-status','auto-gain','gain-status','protect-ip','call-sounds','sound-volume','sound-volume-value',
   'setting-participant-video','setting-self-view','setting-screen-preview','setting-annotations','setting-auto-focus','camera-device','camera-quality','screen-quality','accent-color','compact-mode',
   'context-menu','toast-stack',
 ];
@@ -204,6 +217,9 @@ function connectEvents() {
       removePeer(payload.id);
     } else if (payload.type === 'annotation') {
       handleAnnotation(payload);
+    } else if (payload.type === 'annotation-sync') {
+      state.annotations.set(payload.shareOwnerId, Array.isArray(payload.items) ? payload.items : []);
+      document.querySelectorAll(`canvas[data-share-owner="${CSS.escape(payload.shareOwnerId)}"]`).forEach((canvas) => redrawCanvas(canvas, payload.shareOwnerId));
     } else if (payload.type === 'server-restarting') {
       toast('O Concord está atualizando. A chamada volta sozinha em instantes.');
     }
@@ -246,8 +262,134 @@ function appendMessage(message) {
   time.textContent = new Date(message.createdAt || Date.now()).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
   head.append(author, time);
   const body = document.createElement('div'); body.className = 'message-body'; body.textContent = message.text;
-  row.append(head, body); el.messages.append(row);
+  row.append(head, body);
+  if (Array.isArray(message.attachments) && message.attachments.length) {
+    const attachments = document.createElement('div'); attachments.className = 'message-attachments';
+    message.attachments.forEach((attachment) => attachments.append(renderAttachment(attachment)));
+    row.append(attachments);
+  }
+  el.messages.append(row);
   el.messages.scrollTop = el.messages.scrollHeight;
+}
+
+function formatBytes(size) {
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function renderAttachment(attachment) {
+  const mime = String(attachment.mime || '');
+  if (/^image\/(png|jpe?g|gif|webp)$/.test(mime)) {
+    const link = document.createElement('a'); link.href = attachment.url; link.target = '_blank'; link.rel = 'noopener';
+    const image = document.createElement('img'); image.className = 'attachment-image'; image.src = attachment.url; image.alt = attachment.name || 'Imagem enviada'; image.loading = 'lazy';
+    image.addEventListener('error', () => { link.replaceWith(expiredAttachment()); }); link.append(image); return link;
+  }
+  if (/^audio\/(mpeg|ogg|wav|webm|mp4|x-m4a)$/.test(mime)) {
+    const audio = document.createElement('audio'); audio.className = 'attachment-audio'; audio.controls = true; audio.preload = 'metadata'; audio.src = attachment.url;
+    audio.addEventListener('error', () => audio.replaceWith(expiredAttachment())); return audio;
+  }
+  const link = document.createElement('a'); link.className = 'file-card'; link.href = `${attachment.url}?download=1`; link.download = attachment.name || 'arquivo';
+  link.innerHTML = iconSvg('file');
+  const copy = document.createElement('span'); copy.className = 'file-copy';
+  const name = document.createElement('strong'); name.textContent = attachment.name || 'Arquivo';
+  const size = document.createElement('small'); size.textContent = formatBytes(Number(attachment.size) || 0); copy.append(name, size); link.append(copy); return link;
+}
+
+function expiredAttachment() {
+  const message = document.createElement('span'); message.className = 'attachment-expired'; message.textContent = 'Arquivo expirado ou indisponível'; return message;
+}
+
+function addPendingFiles(fileList) {
+  const available = 5 - state.pendingFiles.length;
+  const selected = [...(fileList || [])].slice(0, Math.max(0, available));
+  for (const file of selected) {
+    if (file.size > 8 * 1024 * 1024) { toast(`${file.name}: limite de 8 MB.`, 'error'); continue; }
+    if (!file.size) continue;
+    state.pendingFiles.push({ id: crypto.randomUUID(), file, preview: file.type.startsWith('image/') ? URL.createObjectURL(file) : '' });
+  }
+  if ([...(fileList || [])].length > available) toast('Você pode enviar até 5 arquivos por mensagem.', 'error');
+  renderPendingFiles();
+}
+
+function renderPendingFiles() {
+  el.attachmentTray.classList.toggle('hidden', !state.pendingFiles.length); el.attachmentTray.replaceChildren();
+  state.pendingFiles.forEach((pending) => {
+    const card = document.createElement('div'); card.className = 'pending-attachment';
+    if (pending.preview) { const image = document.createElement('img'); image.src = pending.preview; image.alt = ''; card.append(image); }
+    else { const icon = document.createElement('span'); icon.className = 'pending-file-icon'; icon.innerHTML = iconSvg(pending.file.type.startsWith('audio/') ? 'waveform' : 'file'); card.append(icon); }
+    const copy = document.createElement('div'); copy.className = 'pending-copy';
+    const name = document.createElement('strong'); name.textContent = pending.file.name;
+    const size = document.createElement('small'); size.textContent = pending.uploading ? 'Enviando…' : formatBytes(pending.file.size); copy.append(name, size);
+    const remove = document.createElement('button'); remove.className = 'pending-remove'; remove.innerHTML = iconSvg('close'); remove.title = 'Remover';
+    remove.disabled = Boolean(pending.uploading); remove.addEventListener('click', () => removePendingFile(pending.id));
+    card.append(copy, remove); el.attachmentTray.append(card);
+  });
+}
+
+function removePendingFile(id) {
+  const index = state.pendingFiles.findIndex((item) => item.id === id); if (index < 0) return;
+  const [removed] = state.pendingFiles.splice(index, 1); if (removed.preview) URL.revokeObjectURL(removed.preview); renderPendingFiles();
+}
+
+async function uploadPendingFile(pending) {
+  if (pending.attachment) return pending.attachment;
+  pending.uploading = true; renderPendingFiles();
+  const query = new URLSearchParams({ clientId: state.clientId });
+  const response = await fetch(`/api/upload?${query}`, {
+    method: 'POST', headers: { 'Content-Type': pending.file.type || 'application/octet-stream', 'X-File-Name': encodeURIComponent(pending.file.name) }, body: pending.file,
+  });
+  const result = await response.json().catch(() => ({})); pending.uploading = false;
+  if (!response.ok) throw new Error(result.error || `Falha ao enviar ${pending.file.name}.`);
+  pending.attachment = result.attachment; return pending.attachment;
+}
+
+async function sendCurrentMessage() {
+  const text = el.messageInput.value.trim(); if (!text && !state.pendingFiles.length) return;
+  const pending = [...state.pendingFiles];
+  el.messageInput.disabled = true;
+  try {
+    const attachments = [];
+    for (const item of pending) attachments.push(await uploadPendingFile(item));
+    await api('/api/message', { text, attachments: attachments.map((item) => item.id) });
+    el.messageInput.value = ''; el.messageInput.style.height = 'auto';
+    pending.forEach((item) => removePendingFile(item.id));
+  } catch (error) { toast(error.message, 'error'); renderPendingFiles(); }
+  finally { el.messageInput.disabled = false; el.messageInput.focus(); }
+}
+
+async function toggleAudioRecording() {
+  if (state.recorder?.state === 'recording') { state.recorder.stop(); return; }
+  if (!window.MediaRecorder) { toast('Seu navegador não suporta gravação de áudio.', 'error'); return; }
+  try {
+    const liveTrack = state.audioStream?.getAudioTracks()[0];
+    state.recordingStream = liveTrack ? new MediaStream([liveTrack.clone()]) : await navigator.mediaDevices.getUserMedia({ audio: audioConstraints(), video: false });
+    state.recordingStream.getAudioTracks().forEach((track) => { track.enabled = true; });
+    const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 'audio/webm';
+    const chunks = []; state.recorder = new MediaRecorder(state.recordingStream, { mimeType, audioBitsPerSecond: 64000 });
+    state.recorder.ondataavailable = (event) => { if (event.data.size) chunks.push(event.data); };
+    state.recorder.onstop = () => {
+      clearInterval(state.recordingTimer); state.recordingTimer = null;
+      state.recordingStream?.getTracks().forEach((track) => track.stop()); state.recordingStream = null;
+      const duration = Math.max(1, Math.round((Date.now() - state.recordingStartedAt) / 1000));
+      const blob = new Blob(chunks, { type: mimeType });
+      if (blob.size) addPendingFiles([new File([blob], `mensagem-de-voz-${duration}s.webm`, { type: 'audio/webm' })]);
+      el.recordAudio.classList.remove('recording'); el.recordAudio.innerHTML = `${iconSvg('waveform')}<span id="recording-time" class="hidden">0:00</span>`; el.recordingTime = document.getElementById('recording-time');
+      playCue('sent'); state.recorder = null;
+    };
+    state.recordingStartedAt = Date.now(); state.recorder.start(500); playCue('record');
+    el.recordAudio.classList.add('recording'); el.recordingTime.classList.remove('hidden');
+    state.recordingTimer = setInterval(() => {
+      const seconds = Math.floor((Date.now() - state.recordingStartedAt) / 1000);
+      el.recordingTime.textContent = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
+      if (seconds >= 120) state.recorder?.stop();
+    }, 250);
+  } catch {
+    clearInterval(state.recordingTimer); state.recordingTimer = null;
+    state.recordingStream?.getTracks().forEach((track) => track.stop()); state.recordingStream = null; state.recorder = null;
+    el.recordAudio.classList.remove('recording'); el.recordingTime.classList.add('hidden');
+    toast('Permita o microfone para gravar uma mensagem de voz.', 'error');
+  }
 }
 
 function allVoiceUsers() {
@@ -310,6 +452,31 @@ function getAudioContext() {
   }
   if (state.audioContext?.state === 'suspended') state.audioContext.resume().catch(() => {});
   return state.audioContext;
+}
+
+function playCue(type) {
+  if (!state.settings.callSounds || state.settings.soundVolume <= 0) return;
+  const context = getAudioContext(); if (!context) return;
+  const patterns = {
+    join: [[0, 520, .08], [.09, 700, .12]],
+    leave: [[0, 620, .09], [.1, 420, .13]],
+    screen: [[0, 740, .07], [.07, 880, .07], [.14, 1040, .11]],
+    mute: [[0, 310, .08], [.08, 220, .1]],
+    unmute: [[0, 270, .07], [.07, 410, .11]],
+    deafen: [[0, 220, .08], [.09, 165, .14]],
+    undeafen: [[0, 220, .07], [.08, 330, .07], [.16, 440, .11]],
+    record: [[0, 660, .09]],
+    sent: [[0, 540, .05], [.055, 780, .08]],
+  };
+  const notes = patterns[type] || patterns.sent;
+  const volume = Math.min(.16, (state.settings.soundVolume / 100) * .16);
+  notes.forEach(([delay, frequency, duration]) => {
+    const oscillator = context.createOscillator(); const gain = context.createGain();
+    const start = context.currentTime + delay; const end = start + duration;
+    oscillator.type = type === 'screen' ? 'triangle' : 'sine'; oscillator.frequency.setValueAtTime(frequency, start);
+    gain.gain.setValueAtTime(.0001, start); gain.gain.exponentialRampToValueAtTime(volume, start + .015); gain.gain.exponentialRampToValueAtTime(.0001, end);
+    oscillator.connect(gain); gain.connect(context.destination); oscillator.start(start); oscillator.stop(end + .02);
+  });
 }
 
 function audioConstraints() {
@@ -389,8 +556,11 @@ async function joinCall(roomId) {
     state.voiceRoom = roomId;
     state.callUsers = result.users || [];
     state.annotations.clear(); state.pinnedUserId = null; state.autoFocusedShareId = null;
+    (result.annotations || []).forEach((snapshot) => state.annotations.set(snapshot.shareOwnerId, snapshot.items || []));
+    state.knownCallUsers.clear(); state.callRosterReady = false;
     renderCall(); renderVoiceChannels(); updateControlStates();
     syncCallUsers(state.callUsers);
+    playCue('join');
     toast(`Você entrou em ${CHANNELS[roomId]}.`);
   } catch (error) { toast(error.message, 'error'); }
 }
@@ -398,8 +568,10 @@ async function joinCall(roomId) {
 async function leaveCall() {
   if (!state.voiceRoom) return;
   const oldRoom = state.voiceRoom;
+  playCue('leave');
   try { await api('/api/call', { action: 'leave' }); } catch { /* limpar localmente mesmo assim */ }
   state.voiceRoom = null; state.callUsers = []; state.pinnedUserId = null; state.autoFocusedShareId = null;
+  state.knownCallUsers.clear(); state.callRosterReady = false; state.annotationPanelOpen = false;
   closeAllPeers(); stopCamera(); stopScreen(false); stopLoopback();
   state.audioStream?.getTracks().forEach((track) => track.stop()); state.audioStream = null;
   state.audioMonitors.delete(state.clientId); state.speaking.clear();
@@ -409,6 +581,16 @@ async function leaveCall() {
 
 function syncCallUsers(users) {
   if (!state.voiceRoom) return;
+  const nextUsers = new Map(users.map((user) => [user.id, user]));
+  if (state.callRosterReady) {
+    for (const [id, user] of nextUsers) {
+      if (id !== state.clientId && !state.knownCallUsers.has(id)) playCue('join');
+      const previous = state.knownCallUsers.get(id);
+      if (id !== state.clientId && user.media?.screenSharing && !previous?.media?.screenSharing) playCue('screen');
+    }
+    for (const id of state.knownCallUsers.keys()) if (id !== state.clientId && !nextUsers.has(id)) playCue('leave');
+  }
+  state.knownCallUsers = nextUsers; state.callRosterReady = true;
   state.callUsers = users;
   const validIds = new Set(users.map((user) => user.id));
   for (const user of users) if (user.id !== state.clientId) createPeer(user.id);
@@ -418,7 +600,11 @@ function syncCallUsers(users) {
 
 function createPeer(userId) {
   if (!state.voiceRoom || userId === state.clientId || state.peers.has(userId)) return state.peers.get(userId);
-  const pc = new RTCPeerConnection({ iceServers: state.iceServers, iceCandidatePoolSize: 10 });
+  const pc = new RTCPeerConnection({
+    iceServers: state.iceServers,
+    iceCandidatePoolSize: 10,
+    iceTransportPolicy: state.settings.protectIp ? 'relay' : 'all',
+  });
   const peer = {
     id: userId, pc, polite: state.clientId.localeCompare(userId) > 0,
     makingOffer: false, ignoreOffer: false, settingRemoteAnswer: false,
@@ -445,7 +631,7 @@ function createPeer(userId) {
     const status = pc.connectionState;
     if (status === 'connected') {
       peer.reconnectAttempts = 0; clearTimeout(peer.disconnectTimer);
-      el.callStatus.textContent = `${Math.max(1, state.callUsers.length)} na chamada · áudio conectado`;
+      el.callStatus.textContent = `${Math.max(1, state.callUsers.length)} na chamada · ${state.settings.protectIp ? 'IP protegido' : 'conexão direta'}`;
     } else if (status === 'failed') {
       recoverPeer(peer);
     } else if (status === 'disconnected') {
@@ -611,17 +797,26 @@ function closeAllPeers() {
   for (const id of [...state.peers.keys()]) removePeer(id);
 }
 
+function rebuildPeerConnections() {
+  if (!state.voiceRoom) return;
+  const peers = state.callUsers.filter((user) => user.id !== state.clientId).map((user) => user.id);
+  closeAllPeers(); peers.forEach(createPeer);
+  el.callStatus.textContent = `${Math.max(1, state.callUsers.length)} na chamada · reconectando com IP ${state.settings.protectIp ? 'protegido' : 'direto'}`;
+}
+
 async function toggleMicrophone() {
   if (!state.audioStream) {
     try { await ensureMicrophone(); state.micEnabled = true; }
     catch { toast('Não consegui acessar o microfone. Confira a permissão.', 'error'); return; }
   } else state.micEnabled = !state.micEnabled;
   state.audioStream.getAudioTracks().forEach((track) => { track.enabled = state.micEnabled; });
+  playCue(state.micEnabled ? 'unmute' : 'mute');
   updateControlStates(); postMediaState();
 }
 
 function toggleDeafen() {
   state.deafened = !state.deafened;
+  playCue(state.deafened ? 'deafen' : 'undeafen');
   applyRemoteAudio(); updateControlStates(); postMediaState();
 }
 
@@ -670,7 +865,7 @@ async function toggleScreen() {
     track.onended = () => stopScreen();
     await replaceLocalTrack('screen', track, state.screenStream);
     if (state.settings.autoFocus) { state.layout = 'focus'; state.autoFocusedShareId = state.clientId; }
-    updateControlStates(); renderVideoGrid(); postMediaState();
+    playCue('screen'); updateControlStates(); renderVideoGrid(); postMediaState();
     toast('Sua tela está sendo compartilhada.');
   } catch (error) {
     if (error.name !== 'NotAllowedError') toast('Não consegui iniciar o compartilhamento.', 'error');
@@ -713,6 +908,7 @@ function stopScreen(notify = true) {
   }
   state.screenStream.getTracks().forEach((track) => { track.onended = null; track.stop(); }); state.screenStream = null;
   state.annotations.delete(state.clientId); state.autoFocusedShareId = null;
+  if (state.activeShareOwnerId === state.clientId) { state.activeShareOwnerId = null; state.annotationPanelOpen = false; }
   if (!state.pinnedUserId) state.layout = 'grid';
   announceMediaDescription(); updateControlStates(); renderVideoGrid(); postMediaState();
   if (notify) toast('Compartilhamento encerrado.');
@@ -741,9 +937,14 @@ function makeVideoTile({ key, user, stream, screen = false, local = false, hidde
   const text = document.createElement('span'); text.textContent = `${user.name}${local ? ' (você)' : ''}`; label.append(text);
   tile.append(video, fallback, label);
   if (screen) {
-    const badge = document.createElement('span'); badge.className = 'screen-badge'; badge.textContent = local ? 'SEU PREVIEW' : 'TELA'; tile.append(badge);
+    const badge = document.createElement('button'); badge.className = 'screen-badge'; badge.textContent = local ? 'SEU PREVIEW' : 'TELA'; badge.title = 'Abrir ferramentas nesta tela';
+    badge.addEventListener('click', (event) => {
+      event.stopPropagation(); state.activeShareOwnerId = user.id; state.annotationPanelOpen = true;
+      updateAnnotationPanel(); renderVideoGrid(); updateControlStates();
+    });
+    tile.append(badge);
     const canvas = document.createElement('canvas'); canvas.className = 'annotation-canvas'; canvas.dataset.shareOwner = user.id;
-    const canDraw = user.media?.annotationsEnabled === true || (local && state.annotationsEnabled);
+    const canDraw = state.annotationPanelOpen && state.activeShareOwnerId === user.id && (local || user.media?.annotationsEnabled === true);
     canvas.classList.toggle('locked', !canDraw); tile.append(canvas); setupDrawingCanvas(canvas, user.id, canDraw);
   }
   tile.addEventListener('dblclick', () => focusUser(user.id));
@@ -777,7 +978,7 @@ function renderVideoGrid() {
   if (!tiles.length) {
     const empty = document.createElement('div'); empty.className = 'empty-state'; empty.textContent = 'Áudio conectado. Ative uma câmera ou compartilhe a tela.'; el.videoGrid.append(empty);
   }
-  applyLayoutState();
+  applyLayoutState(); updateAnnotationPanel();
 }
 
 function applyLayoutState() {
@@ -807,78 +1008,175 @@ function toggleLayout() {
   applyLayoutState();
 }
 
+function screenContentBox(canvas) {
+  const rect = canvas.getBoundingClientRect(); const video = canvas.parentElement?.querySelector('video');
+  const aspect = video?.videoWidth && video?.videoHeight ? video.videoWidth / video.videoHeight : 16 / 9;
+  let width = rect.width; let height = width / aspect;
+  if (height > rect.height) { height = rect.height; width = height * aspect; }
+  return { x: (rect.width - width) / 2, y: (rect.height - height) / 2, width, height, rect };
+}
+
+function canAnnotate(ownerId) {
+  if (ownerId === state.clientId) return Boolean(state.screenStream);
+  return state.callUsers.find((user) => user.id === ownerId)?.media?.annotationsEnabled === true;
+}
+
 function setupDrawingCanvas(canvas, shareOwnerId, enabled) {
-  let activeStroke = null;
+  let activeItem = null;
   const pointFromEvent = (event) => {
-    const rect = canvas.getBoundingClientRect();
-    return { x: Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)), y: Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height)) };
+    const box = screenContentBox(canvas);
+    return {
+      x: Math.max(0, Math.min(1, (event.clientX - box.rect.left - box.x) / box.width)),
+      y: Math.max(0, Math.min(1, (event.clientY - box.rect.top - box.y) / box.height)),
+    };
   };
   const finish = async () => {
-    if (!activeStroke) return;
-    const stroke = activeStroke; activeStroke = null;
-    if (stroke.points.length < 2) return;
-    addAnnotationStroke(shareOwnerId, stroke);
-    try { await api('/api/annotation', { action: 'stroke', shareOwnerId, stroke }); }
-    catch (error) { toast(error.message, 'error'); }
+    if (!activeItem) return;
+    const item = activeItem; activeItem = null;
+    if (item.points.length < 2) return;
+    addAnnotationItem(shareOwnerId, item, true);
+    try { await api('/api/annotation', { action: 'item', shareOwnerId, item }); }
+    catch (error) { removeAnnotationItem(shareOwnerId, item.id); toast(error.message, 'error'); }
   };
   if (enabled) {
     canvas.addEventListener('pointerdown', (event) => {
-      event.preventDefault(); canvas.setPointerCapture(event.pointerId);
-      activeStroke = { id: crypto.randomUUID(), color: state.drawColor, width: 3, points: [pointFromEvent(event)] };
+      event.preventDefault();
+      if (state.drawTool === 'text') { createTextAnnotation(canvas, shareOwnerId, pointFromEvent(event)); return; }
+      canvas.setPointerCapture(event.pointerId);
+      activeItem = {
+        id: crypto.randomUUID(), tool: state.drawTool, color: state.drawColor,
+        width: state.drawTool === 'eraser' ? state.drawSize * 2 : state.drawSize,
+        points: [pointFromEvent(event)],
+      };
     });
     canvas.addEventListener('pointermove', (event) => {
-      if (!activeStroke) return;
-      activeStroke.points.push(pointFromEvent(event)); redrawCanvas(canvas, shareOwnerId, activeStroke);
+      if (!activeItem) return;
+      activeItem.points.push(pointFromEvent(event)); redrawCanvas(canvas, shareOwnerId, activeItem);
     });
     canvas.addEventListener('pointerup', finish); canvas.addEventListener('pointercancel', finish);
   }
   requestAnimationFrame(() => redrawCanvas(canvas, shareOwnerId));
 }
 
-function addAnnotationStroke(ownerId, stroke) {
-  const strokes = state.annotations.get(ownerId) || [];
-  if (!strokes.some((item) => item.id === stroke.id)) strokes.push(stroke);
-  if (strokes.length > 250) strokes.shift();
-  state.annotations.set(ownerId, strokes);
+function createTextAnnotation(canvas, ownerId, point) {
+  if (canvas.parentElement.querySelector('.annotation-text-input')) return;
+  const box = screenContentBox(canvas); const input = document.createElement('input');
+  input.className = 'annotation-text-input'; input.maxLength = 160; input.placeholder = 'Digite e pressione Enter';
+  input.style.left = `${box.x + point.x * box.width}px`; input.style.top = `${box.y + point.y * box.height}px`;
+  const finish = async (save) => {
+    const text = input.value.trim(); input.remove(); if (!save || !text) return;
+    const item = { id: crypto.randomUUID(), tool: 'text', text, x: point.x, y: point.y, color: state.drawColor, width: state.drawSize };
+    addAnnotationItem(ownerId, item, true);
+    try { await api('/api/annotation', { action: 'item', shareOwnerId: ownerId, item }); }
+    catch (error) { removeAnnotationItem(ownerId, item.id); toast(error.message, 'error'); }
+  };
+  input.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') { event.preventDefault(); finish(true); }
+    if (event.key === 'Escape') finish(false);
+  });
+  input.addEventListener('blur', () => finish(Boolean(input.value.trim())), { once: true });
+  canvas.parentElement.append(input); input.focus();
+}
+
+function addAnnotationItem(ownerId, item, own = false) {
+  const items = state.annotations.get(ownerId) || [];
+  if (!items.some((existing) => existing.id === item.id)) items.push(item);
+  if (items.length > 500) items.shift(); state.annotations.set(ownerId, items);
+  if (own && !state.ownAnnotationIds.some((entry) => entry.id === item.id)) state.ownAnnotationIds.push({ ownerId, id: item.id });
+  document.querySelectorAll(`canvas[data-share-owner="${CSS.escape(ownerId)}"]`).forEach((canvas) => redrawCanvas(canvas, ownerId));
+}
+
+function removeAnnotationItem(ownerId, itemId) {
+  const items = state.annotations.get(ownerId) || [];
+  state.annotations.set(ownerId, items.filter((item) => item.id !== itemId));
+  state.ownAnnotationIds = state.ownAnnotationIds.filter((entry) => entry.id !== itemId);
   document.querySelectorAll(`canvas[data-share-owner="${CSS.escape(ownerId)}"]`).forEach((canvas) => redrawCanvas(canvas, ownerId));
 }
 
 function redrawCanvas(canvas, ownerId, temporary = null) {
-  const rect = canvas.getBoundingClientRect(); if (!rect.width || !rect.height) return;
+  const box = screenContentBox(canvas); if (!box.rect.width || !box.rect.height) return;
   const ratio = Math.min(window.devicePixelRatio || 1, 2);
-  const width = Math.round(rect.width * ratio); const height = Math.round(rect.height * ratio);
+  const width = Math.round(box.rect.width * ratio); const height = Math.round(box.rect.height * ratio);
   if (canvas.width !== width || canvas.height !== height) { canvas.width = width; canvas.height = height; }
-  const context = canvas.getContext('2d'); context.clearRect(0, 0, width, height);
-  context.lineCap = 'round'; context.lineJoin = 'round';
-  const strokes = [...(state.annotations.get(ownerId) || []), ...(temporary ? [temporary] : [])];
-  for (const stroke of strokes) {
-    if (!stroke.points?.length) continue;
-    context.beginPath(); context.strokeStyle = stroke.color; context.lineWidth = stroke.width * ratio;
-    context.moveTo(stroke.points[0].x * width, stroke.points[0].y * height);
-    stroke.points.slice(1).forEach((point) => context.lineTo(point.x * width, point.y * height));
+  const context = canvas.getContext('2d'); context.clearRect(0, 0, width, height); context.lineCap = 'round'; context.lineJoin = 'round';
+  const drawBox = { x: box.x * ratio, y: box.y * ratio, width: box.width * ratio, height: box.height * ratio };
+  const items = [...(state.annotations.get(ownerId) || []), ...(temporary ? [temporary] : [])];
+  for (const item of items) {
+    context.globalCompositeOperation = item.tool === 'eraser' ? 'destination-out' : 'source-over';
+    if (item.tool === 'text') {
+      context.fillStyle = item.color; context.font = `600 ${Math.max(14, item.width * 4) * ratio}px Inter, sans-serif`;
+      context.fillText(item.text, drawBox.x + item.x * drawBox.width, drawBox.y + item.y * drawBox.height); continue;
+    }
+    if (!item.points?.length) continue;
+    context.beginPath(); context.strokeStyle = item.color; context.lineWidth = item.width * ratio;
+    context.moveTo(drawBox.x + item.points[0].x * drawBox.width, drawBox.y + item.points[0].y * drawBox.height);
+    item.points.slice(1).forEach((point) => context.lineTo(drawBox.x + point.x * drawBox.width, drawBox.y + point.y * drawBox.height));
     context.stroke();
   }
+  context.globalCompositeOperation = 'source-over';
 }
 
 function handleAnnotation(payload) {
+  const ownerId = payload.shareOwnerId;
   if (payload.action === 'clear') {
-    state.annotations.delete(payload.shareOwnerId);
-    document.querySelectorAll(`canvas[data-share-owner="${CSS.escape(payload.shareOwnerId)}"]`).forEach((canvas) => redrawCanvas(canvas, payload.shareOwnerId));
-  } else if (payload.stroke) addAnnotationStroke(payload.shareOwnerId, payload.stroke);
+    state.annotations.delete(ownerId); state.ownAnnotationIds = state.ownAnnotationIds.filter((entry) => entry.ownerId !== ownerId);
+    document.querySelectorAll(`canvas[data-share-owner="${CSS.escape(ownerId)}"]`).forEach((canvas) => redrawCanvas(canvas, ownerId));
+  } else if (payload.action === 'remove') removeAnnotationItem(ownerId, payload.itemId);
+  else if (payload.item || payload.stroke) addAnnotationItem(ownerId, payload.item || payload.stroke, payload.from === state.clientId);
+}
+
+function currentSharedOwner() {
+  const sharingIds = new Set([
+    ...(state.screenStream ? [state.clientId] : []),
+    ...state.callUsers.filter((user) => user.media?.screenSharing).map((user) => user.id),
+  ]);
+  if (sharingIds.has(state.activeShareOwnerId)) return state.activeShareOwnerId;
+  if (sharingIds.has(state.pinnedUserId)) return state.pinnedUserId;
+  if (sharingIds.has(state.autoFocusedShareId)) return state.autoFocusedShareId;
+  return sharingIds.values().next().value || null;
+}
+
+function updateAnnotationPanel() {
+  const ownerId = currentSharedOwner(); state.activeShareOwnerId = ownerId;
+  if (!ownerId) { state.annotationPanelOpen = false; el.annotationToolbar.classList.add('hidden'); return; }
+  const owner = getUser(ownerId); el.annotationTarget.textContent = `Tela de ${owner.name}${ownerId === state.clientId ? ' (você)' : ''}`;
+  const ownScreen = ownerId === state.clientId;
+  el.annotationPermissionRow.classList.toggle('hidden', !ownScreen); el.allowAnnotations.checked = state.annotationsEnabled;
+  const allowed = canAnnotate(ownerId);
+  el.annotationHelp.textContent = allowed ? 'Clique e arraste diretamente sobre a tela compartilhada.' : `${owner.name} desativou as anotações.`;
+  el.clearDrawings.disabled = !ownScreen;
+  el.undoDrawing.disabled = !state.ownAnnotationIds.some((entry) => entry.ownerId === ownerId);
+  el.annotationToolbar.classList.toggle('hidden', !state.annotationPanelOpen);
+  el.callDraw.classList.toggle('active', state.annotationPanelOpen);
+}
+
+function toggleAnnotationPanel() {
+  if (!currentSharedOwner()) { toast('Ainda não há uma tela compartilhada para anotar.'); return; }
+  state.annotationPanelOpen = !state.annotationPanelOpen; updateAnnotationPanel(); renderVideoGrid(); updateControlStates();
+}
+
+function closeAnnotationPanel() { state.annotationPanelOpen = false; updateAnnotationPanel(); renderVideoGrid(); updateControlStates(); }
+
+async function undoDrawing() {
+  const ownerId = currentSharedOwner();
+  const latest = [...state.ownAnnotationIds].reverse().find((entry) => entry.ownerId === ownerId);
+  if (!latest) { toast('Você ainda não fez nenhuma anotação nessa tela.'); return; }
+  removeAnnotationItem(ownerId, latest.id);
+  try { await api('/api/annotation', { action: 'remove', shareOwnerId: ownerId, itemId: latest.id }); }
+  catch (error) { toast(error.message, 'error'); }
 }
 
 async function clearDrawings() {
-  const ownerId = state.pinnedUserId || state.autoFocusedShareId || (state.screenStream ? state.clientId : state.callUsers.find((user) => user.media?.screenSharing)?.id);
-  if (!ownerId) return;
+  const ownerId = currentSharedOwner(); if (!ownerId) return;
+  if (ownerId !== state.clientId) { toast('Somente quem compartilha pode apagar todas as anotações.', 'error'); return; }
   try { await api('/api/annotation', { action: 'clear', shareOwnerId: ownerId }); }
   catch (error) { toast(error.message, 'error'); }
 }
 
-function toggleAnnotations() {
-  if (!state.screenStream) { toast('Comece a compartilhar sua tela para liberar desenhos.'); return; }
-  state.annotationsEnabled = !state.annotationsEnabled;
-  state.settings.annotations = state.annotationsEnabled; saveSettings();
-  updateControlStates(); renderVideoGrid(); postMediaState();
+function setAnnotationPermission(enabled) {
+  if (!state.screenStream) return;
+  state.annotationsEnabled = enabled; state.settings.annotations = enabled; saveSettings();
+  updateAnnotationPanel(); renderVideoGrid(); postMediaState(); updateControlStates();
 }
 
 function renderCall() {
@@ -1011,8 +1309,7 @@ function updateControlStates() {
   el.callCamera.classList.toggle('active', Boolean(state.cameraStream));
   el.callCamera.innerHTML = iconSvg(state.cameraStream ? 'video' : 'video-off');
   el.callScreen.classList.toggle('active', Boolean(state.screenStream));
-  el.callDraw.classList.toggle('active', Boolean(state.screenStream && state.annotationsEnabled));
-  el.annotationToolbar.classList.toggle('hidden', !state.callUsers.some((user) => user.media?.screenSharing) && !state.screenStream);
+  updateAnnotationPanel();
   el.participantVideoButton.classList.toggle('active', state.settings.participantVideo);
   el.selfViewButton.classList.toggle('active', state.settings.selfView);
 }
@@ -1035,6 +1332,8 @@ function syncSettingsControls() {
   el.noiseSuppression.checked = state.settings.noiseSuppression; el.echoCancellation.checked = state.settings.echoCancellation; el.autoGain.checked = state.settings.autoGainControl;
   el.settingParticipantVideo.checked = state.settings.participantVideo; el.settingSelfView.checked = state.settings.selfView;
   el.settingScreenPreview.checked = state.settings.screenPreview; el.settingAnnotations.checked = state.settings.annotations; el.settingAutoFocus.checked = state.settings.autoFocus;
+  el.protectIp.checked = state.settings.protectIp; el.callSounds.checked = state.settings.callSounds;
+  el.soundVolume.value = state.settings.soundVolume; el.soundVolumeValue.value = `${state.settings.soundVolume}%`;
   el.cameraQuality.value = state.settings.cameraQuality; el.screenQuality.value = state.settings.screenQuality;
   el.accentColor.value = state.settings.accent; el.compactMode.checked = state.settings.compact;
 }
@@ -1098,20 +1397,28 @@ function hideContextMenu() { el.contextMenu.classList.add('hidden'); }
 document.querySelectorAll('[data-text-room]').forEach((button) => button.addEventListener('click', () => switchTextRoom(button.dataset.textRoom)));
 document.querySelectorAll('[data-voice-room]').forEach((button) => button.addEventListener('click', () => joinCall(button.dataset.voiceRoom)));
 
-el.messageForm.addEventListener('submit', async (event) => {
-  event.preventDefault(); const text = el.messageInput.value.trim(); if (!text) return;
-  el.messageInput.value = ''; el.messageInput.style.height = 'auto';
-  try { await api('/api/message', { text }); }
-  catch (error) { el.messageInput.value = text; toast(error.message, 'error'); }
-});
+el.messageForm.addEventListener('submit', async (event) => { event.preventDefault(); await sendCurrentMessage(); });
 el.messageInput.addEventListener('input', () => { el.messageInput.style.height = 'auto'; el.messageInput.style.height = `${Math.min(140, el.messageInput.scrollHeight)}px`; });
 el.messageInput.addEventListener('keydown', (event) => {
   if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); el.messageForm.requestSubmit(); }
 });
+el.attachButton.addEventListener('click', () => el.fileInput.click());
+el.fileInput.addEventListener('change', () => { addPendingFiles(el.fileInput.files); el.fileInput.value = ''; });
+el.recordAudio.addEventListener('click', toggleAudioRecording);
+['dragenter', 'dragover'].forEach((type) => el.chatArea.addEventListener(type, (event) => {
+  event.preventDefault(); if (event.dataTransfer?.types?.includes('Files')) el.chatArea.classList.add('drop-active');
+}));
+['dragleave', 'drop'].forEach((type) => el.chatArea.addEventListener(type, (event) => {
+  event.preventDefault(); el.chatArea.classList.remove('drop-active');
+  if (type === 'drop' && event.dataTransfer?.files?.length) addPendingFiles(event.dataTransfer.files);
+}));
+el.messageInput.addEventListener('paste', (event) => {
+  const files = [...(event.clipboardData?.files || [])]; if (files.length) { event.preventDefault(); addPendingFiles(files); }
+});
 
 [el.barMic, el.callMic].forEach((button) => button.addEventListener('click', toggleMicrophone));
 [el.barDeafen, el.callDeafen].forEach((button) => button.addEventListener('click', toggleDeafen));
-el.callCamera.addEventListener('click', toggleCamera); el.callScreen.addEventListener('click', toggleScreen); el.callDraw.addEventListener('click', toggleAnnotations);
+el.callCamera.addEventListener('click', toggleCamera); el.callScreen.addEventListener('click', toggleScreen); el.callDraw.addEventListener('click', toggleAnnotationPanel);
 el.leaveCall.addEventListener('click', leaveCall); el.disconnectVoice.addEventListener('click', leaveCall);
 el.layoutButton.addEventListener('click', toggleLayout);
 el.fullscreenButton.addEventListener('click', async () => {
@@ -1131,12 +1438,24 @@ document.querySelectorAll('[data-draw-color]').forEach((button) => button.addEve
   state.drawColor = button.dataset.drawColor;
   document.querySelectorAll('[data-draw-color]').forEach((item) => item.classList.toggle('active', item === button));
 }));
-el.clearDrawings.addEventListener('click', clearDrawings);
+document.querySelectorAll('[data-draw-tool]').forEach((button) => button.addEventListener('click', () => {
+  state.drawTool = button.dataset.drawTool;
+  document.querySelectorAll('[data-draw-tool]').forEach((item) => item.classList.toggle('active', item === button));
+}));
+el.drawSize.addEventListener('input', () => { state.drawSize = Number(el.drawSize.value); });
+el.undoDrawing.addEventListener('click', undoDrawing); el.clearDrawings.addEventListener('click', clearDrawings);
+el.closeAnnotation.addEventListener('click', closeAnnotationPanel);
+el.allowAnnotations.addEventListener('change', () => setAnnotationPermission(el.allowAnnotations.checked));
 
 [el.openSettings, el.profileButton].forEach((button) => button.addEventListener('click', () => openSettings(button === el.profileButton ? 'account' : 'voice')));
 el.closeSettings.addEventListener('click', closeSettings);
 document.querySelectorAll('[data-settings-tab]').forEach((button) => button.addEventListener('click', () => selectSettingsTab(button.dataset.settingsTab)));
-document.addEventListener('keydown', (event) => { if (event.key === 'Escape') { hideContextMenu(); if (!el.settingsOverlay.classList.contains('hidden')) closeSettings(); } });
+document.addEventListener('keydown', (event) => {
+  if (event.key !== 'Escape') return;
+  hideContextMenu();
+  if (!el.settingsOverlay.classList.contains('hidden')) closeSettings();
+  else if (state.annotationPanelOpen) closeAnnotationPanel();
+});
 
 el.avatarInput.addEventListener('change', () => prepareAvatar(el.avatarInput.files?.[0]));
 el.removeAvatar.addEventListener('click', () => { state.pendingAvatar = ''; updateSelfUI(); el.profileFeedback.textContent = 'Foto removida. Clique em Salvar perfil.'; });
@@ -1160,6 +1479,16 @@ el.cameraDevice.addEventListener('change', async () => {
   state.settings.cameraId = el.cameraDevice.value; saveSettings(); if (state.cameraStream) { stopCamera(); await toggleCamera(); }
 });
 el.loopbackButton.addEventListener('click', toggleLoopback);
+el.protectIp.addEventListener('change', () => {
+  state.settings.protectIp = el.protectIp.checked; saveSettings(); rebuildPeerConnections();
+  toast(state.settings.protectIp ? 'Proteção de IP ativada. A chamada usa retransmissão.' : 'Conexão direta permitida. Outros participantes podem receber seu IP.', state.settings.protectIp ? '' : 'error');
+});
+el.callSounds.addEventListener('change', () => {
+  state.settings.callSounds = el.callSounds.checked; saveSettings(); if (state.settings.callSounds) playCue('sent');
+});
+el.soundVolume.addEventListener('input', () => {
+  state.settings.soundVolume = Number(el.soundVolume.value); el.soundVolumeValue.value = `${state.settings.soundVolume}%`; saveSettings();
+});
 
 const processSettings = [
   [el.noiseSuppression, 'noiseSuppression'], [el.echoCancellation, 'echoCancellation'], [el.autoGain, 'autoGainControl'],
@@ -1172,7 +1501,10 @@ const visualSettings = [
 ];
 visualSettings.forEach(([control, key]) => control.addEventListener('change', () => {
   state.settings[key] = control.checked;
-  if (key === 'annotations') state.annotationsEnabled = control.checked;
+  if (key === 'annotations') {
+    if (state.screenStream) { setAnnotationPermission(control.checked); return; }
+    state.annotationsEnabled = control.checked;
+  }
   saveSettings(); updateControlStates(); renderVideoGrid(); postMediaState();
 }));
 el.cameraQuality.addEventListener('change', () => { state.settings.cameraQuality = el.cameraQuality.value; saveSettings(); });
@@ -1197,4 +1529,3 @@ navigator.mediaDevices?.addEventListener?.('devicechange', refreshDevices);
 applyAppearance(); syncSettingsControls(); updateSelfUI(); updateControlStates(); updateProcessingStatus();
 state.annotationsEnabled = state.settings.annotations;
 loadIceServers().finally(connectEvents);
-

@@ -7,7 +7,7 @@ async function withServer(run) {
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const { port } = server.address();
   try { await run(`http://127.0.0.1:${port}`); }
-  finally { await new Promise((resolve) => server.close(resolve)); }
+  finally { server.closeAllConnections(); await new Promise((resolve) => server.close(resolve)); }
 }
 
 async function openEvents(baseUrl, room, clientId, name) {
@@ -54,10 +54,10 @@ async function closeEvents(...sessions) {
   sessions.forEach((session) => session.controller.abort());
 }
 
-test('publica a versão 0.4 e os servidores ICE', async () => {
+test('publica a versão 0.5 e os servidores ICE', async () => {
   await withServer(async (baseUrl) => {
     const health = await fetch(`${baseUrl}/api/health`);
-    assert.deepEqual(await health.json(), { ok: true, name: 'Concord', version: '0.4.0' });
+    assert.deepEqual(await health.json(), { ok: true, name: 'Concord', version: '0.5.0' });
     assert.equal(health.headers.get('x-content-type-options'), 'nosniff');
     const ice = await (await fetch(`${baseUrl}/api/ice`)).json();
     assert.ok(ice.iceServers.some((server) => String(server.urls).includes('turn:')));
@@ -71,6 +71,8 @@ test('entrega a interface real sem os botões fictícios antigos', async () => {
     assert.match(html, /Preview da minha tela/);
     assert.match(html, /Permitir desenhos/);
     assert.match(html, /Teste do microfone/);
+    assert.match(html, /Proteger meu IP/);
+    assert.match(html, /Gravar mensagem de voz/);
     assert.doesNotMatch(html, /Adicionar servidor|Anexar arquivo/);
   });
 });
@@ -98,14 +100,54 @@ test('mantém texto e voz separados, encaminha sinais e sincroniza desenhos', as
     });
     await nextEvent(amigo, (event) => event.type === 'call-state' && event.users.find((user) => user.id === 'gabriel-1')?.media.screenSharing);
     await post(baseUrl, '/api/annotation', {
-      clientId: 'amigo-1', shareOwnerId: 'gabriel-1', action: 'stroke',
-      stroke: { id: 'traco-1', color: '#ff5d8f', width: 3, points: [{ x: .1, y: .2 }, { x: .8, y: .7 }] },
+      clientId: 'amigo-1', shareOwnerId: 'gabriel-1', action: 'item',
+      item: { id: 'traco-1', tool: 'pen', color: '#ff5d8f', width: 3, points: [{ x: .1, y: .2 }, { x: .8, y: .7 }] },
     });
-    const drawing = await nextEvent(gabriel, (event) => event.type === 'annotation');
-    assert.equal(drawing.stroke.id, 'traco-1');
+    const drawing = await nextEvent(gabriel, (event) => event.type === 'annotation' && event.action === 'item');
+    assert.equal(drawing.item.id, 'traco-1');
     assert.equal(drawing.from, 'amigo-1');
 
-    await closeEvents(gabriel, amigo);
+    const atrasado = await openEvents(baseUrl, 'cafe', 'atrasado-1', 'Atrasado');
+    await nextEvent(atrasado, (event) => event.type === 'hello');
+    const joined = await post(baseUrl, '/api/call', { clientId: 'atrasado-1', action: 'join', voiceRoom: 'lobby', media: { micEnabled: true } });
+    assert.equal(joined.annotations[0].items[0].id, 'traco-1');
+
+    await post(baseUrl, '/api/media-state', {
+      clientId: 'gabriel-1', media: { micEnabled: true, screenSharing: true, annotationsEnabled: false },
+    });
+    const denied = await fetch(`${baseUrl}/api/annotation`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        clientId: 'amigo-1', shareOwnerId: 'gabriel-1', action: 'item',
+        item: { id: 'bloqueado-1', tool: 'text', text: 'não', x: .5, y: .5, color: '#ffffff', width: 4 },
+      }),
+    });
+    assert.equal(denied.status, 403);
+    await post(baseUrl, '/api/annotation', { clientId: 'gabriel-1', shareOwnerId: 'gabriel-1', action: 'clear' });
+
+    await closeEvents(gabriel, amigo, atrasado);
+  });
+});
+
+test('envia anexos temporários no chat e força download de arquivos arbitrários', async () => {
+  await withServer(async (baseUrl) => {
+    const session = await openEvents(baseUrl, 'geral', 'arquivo-1', 'Gabriel');
+    await nextEvent(session, (event) => event.type === 'hello');
+    const upload = await fetch(`${baseUrl}/api/upload?clientId=arquivo-1`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain', 'X-File-Name': encodeURIComponent('notas.txt') },
+      body: 'arquivo seguro',
+    });
+    assert.equal(upload.status, 201);
+    const attachment = (await upload.json()).attachment;
+    await post(baseUrl, '/api/message', { clientId: 'arquivo-1', room: 'geral', text: '', attachments: [attachment.id] });
+    const message = await nextEvent(session, (event) => event.type === 'message');
+    assert.equal(message.message.attachments[0].name, 'notas.txt');
+    const download = await fetch(`${baseUrl}${attachment.url}`);
+    assert.equal(download.headers.get('content-type'), 'application/octet-stream');
+    assert.match(download.headers.get('content-disposition'), /^attachment/);
+    assert.equal(await download.text(), 'arquivo seguro');
+    await closeEvents(session);
   });
 });
 
@@ -121,4 +163,3 @@ test('preserva a chamada ao trocar o canal de texto', async () => {
     await closeEvents(first, second);
   });
 });
-
