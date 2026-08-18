@@ -157,7 +157,7 @@ function createServer() {
     }
 
     if (request.method === 'GET' && requestUrl.pathname === '/api/health') {
-      json(response, 200, { ok: true, name: 'Lume' });
+      json(response, 200, { ok: true, name: 'Concord' });
       return;
     }
 
@@ -189,7 +189,7 @@ function createServer() {
       const previous = room.clients.get(clientId);
       if (previous && !previous.response.writableEnded) previous.response.end();
 
-      const client = { name, response, inCall: false };
+      const client = { name, response, inCall: Boolean(previous?.inCall) };
       room.clients.set(clientId, client);
       writeSse(response, {
         type: 'hello',
@@ -298,7 +298,7 @@ if (require.main === module) {
   const host = process.env.HOST || '0.0.0.0';
   const server = createServer();
   server.listen(port, host, () => {
-    console.log(`Lume disponível em http://localhost:${port}`);
+    console.log(`Concord disponível em http://localhost:${port}`);
   });
 
   let shuttingDown = false;
