@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#12131a" />
+    <title>Lume — seu espaço, sua galera</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div id="app" class="app-shell is-hidden">
+      <aside class="server-rail" aria-label="Servidores">
+        <button class="server-icon brand active" title="Lume" aria-label="Lume">
+          <span class="brand-mark">L</span>
+        </button>
+        <div class="rail-line"></div>
+        <button class="server-icon server-one" title="Comunidade Criativa" aria-label="Comunidade Criativa">CC</button>
+        <button class="server-icon server-two" title="Dev House" aria-label="Dev House">DH</button>
+        <button class="server-icon add-server" title="Adicionar servidor" aria-label="Adicionar servidor">+</button>
+      </aside>
+
+      <aside class="channel-sidebar">
+        <header class="server-header">
+          <div>
+            <span class="eyebrow">SEU ESPAÇO</span>
+            <h1>Comunidade Lume</h1>
+          </div>
+          <button class="icon-button" aria-label="Opções do servidor">⌄</button>
+        </header>
+
+        <nav class="channels" aria-label="Canais">
+          <div class="channel-section">
+            <div class="section-title"><span>CANAIS DE TEXTO</span><button aria-label="Criar canal">+</button></div>
+            <button class="channel active" data-room="geral" data-kind="text"><span class="channel-symbol">#</span> geral</button>
+            <button class="channel" data-room="projetos" data-kind="text"><span class="channel-symbol">#</span> projetos</button>
+            <button class="channel" data-room="cafe" data-kind="text"><span class="channel-symbol">#</span> café</button>
+          </div>
+          <div class="channel-section">
+            <div class="section-title"><span>CANAIS DE VOZ</span><button aria-label="Criar canal">+</button></div>
+            <button class="channel voice-channel" data-room="lobby" data-kind="voice"><span class="channel-symbol">◖</span> Lobby</button>
+            <button class="channel voice-channel" data-room="jogos" data-kind="voice"><span class="channel-symbol">◖</span> Jogatina</button>
+            <button class="channel voice-channel" data-room="musica" data-kind="voice"><span class="channel-symbol">◖</span> Música & chill</button>
+          </div>
+        </nav>
+
+        <div id="connection-panel" class="connection-panel is-hidden">
+          <div>
+            <strong>Voz conectada</strong>
+            <span id="connected-room">Lobby</span>
+          </div>
+          <button id="disconnect-compact" class="icon-button danger" title="Desconectar" aria-label="Desconectar">↗</button>
+        </div>
+
+        <footer class="profile-bar">
+          <div id="profile-avatar" class="avatar self-avatar">V</div>
+          <div class="profile-copy">
+            <strong id="profile-name">Visitante</strong>
+            <span id="profile-status">Disponível</span>
+          </div>
+          <button id="mic-compact" class="icon-button" title="Microfone" aria-label="Microfone">♩</button>
+          <button id="settings-button" class="icon-button" title="Editar perfil" aria-label="Editar perfil">⚙</button>
+        </footer>
+      </aside>
+
+      <main class="main-panel">
+        <header class="topbar">
+          <div class="room-heading">
+            <span id="room-symbol" class="room-symbol">#</span>
+            <div>
+              <h2 id="room-name">geral</h2>
+              <span id="room-description">Conversa livre para todo mundo</span>
+            </div>
+          </div>
+          <div class="topbar-actions">
+            <span id="network-status" class="network-status"><span class="status-dot"></span> Conectado</span>
+            <button id="toggle-members" class="icon-button desktop-only" title="Participantes" aria-label="Participantes">☷</button>
+          </div>
+        </header>
+
+        <section id="call-stage" class="call-stage is-hidden" aria-label="Chamada">
+          <div class="call-topline">
+            <div>
+              <span class="live-pill"><span></span> AO VIVO</span>
+              <h3 id="call-title">Lobby</h3>
+            </div>
+            <button id="minimize-call" class="icon-button" title="Minimizar chamada" aria-label="Minimizar chamada">⌃</button>
+          </div>
+          <div id="video-grid" class="video-grid"></div>
+          <div class="call-controls">
+            <button id="mic-button" class="control-button" aria-label="Alternar microfone"><span>♩</span><small>Microfone</small></button>
+            <button id="camera-button" class="control-button" aria-label="Alternar câmera"><span>▣</span><small>Câmera</small></button>
+            <button id="screen-button" class="control-button primary" aria-label="Compartilhar tela"><span>▱</span><small>Compartilhar</small></button>
+            <button id="leave-button" class="control-button hangup" aria-label="Sair da chamada"><span>×</span><small>Sair</small></button>
+          </div>
+        </section>
+
+        <section class="chat-area">
+          <div id="messages" class="messages" aria-live="polite"></div>
+          <form id="message-form" class="message-composer">
+            <button type="button" class="attach-button" aria-label="Adicionar arquivo">+</button>
+            <textarea id="message-input" rows="1" maxlength="2000" placeholder="Conversar em #geral" aria-label="Mensagem"></textarea>
+            <button id="send-button" class="send-button" type="submit" aria-label="Enviar mensagem">➤</button>
+          </form>
+        </section>
+      </main>
+
+      <aside id="members-panel" class="members-panel">
+        <div class="members-header">
+          <h3>Na sala — <span id="member-count">1</span></h3>
+        </div>
+        <div id="members-list" class="members-list"></div>
+        <div class="invite-card">
+          <div class="invite-icon">✦</div>
+          <strong>Traga sua galera</strong>
+          <span>Abra este endereço em outra janela ou computador.</span>
+          <button id="copy-invite">Copiar convite</button>
+        </div>
+      </aside>
+    </div>
+
+    <div id="welcome-modal" class="modal-backdrop">
+      <form id="welcome-form" class="welcome-card">
+        <div class="welcome-logo">L</div>
+        <span class="eyebrow">BEM-VINDO AO LUME</span>
+        <h2>Um lugar para ficar junto.</h2>
+        <p>Entre com um nome para conversar e testar chamadas com outras pessoas na sua rede.</p>
+        <label for="name-input">Como devemos chamar você?</label>
+        <input id="name-input" maxlength="32" autocomplete="nickname" placeholder="Seu nome" required />
+        <button type="submit">Entrar no Lume <span>→</span></button>
+        <small>Protótipo local — nenhuma conta é necessária.</small>
+      </form>
+    </div>
+
+    <div id="toast-region" class="toast-region" aria-live="polite"></div>
+
+    <div id="source-modal" class="modal-backdrop is-hidden">
+      <section class="source-card" role="dialog" aria-modal="true" aria-labelledby="source-title">
+        <div class="source-card-header">
+          <div>
+            <span class="eyebrow">COMPARTILHAR TELA</span>
+            <h2 id="source-title">O que você quer mostrar?</h2>
+          </div>
+          <button id="close-source-modal" class="icon-button" aria-label="Fechar">×</button>
+        </div>
+        <div id="source-grid" class="source-grid"></div>
+        <p>Escolha uma tela ou janela. Você poderá interromper o compartilhamento a qualquer momento.</p>
+      </section>
+    </div>
+    <script src="/app.js" defer></script>
+  </body>
+</html>
+
