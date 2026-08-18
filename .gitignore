@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.electron-cache/
+.runtime/
+*.log
+.DS_Store
+
