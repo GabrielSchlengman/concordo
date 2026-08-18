@@ -1,13 +1,23 @@
 {
-  "name": "lume-cloud",
-  "version": "0.2.0",
+  "name": "concord",
+  "version": "0.3.0",
   "private": true,
-  "description": "Servidor público do Lume para hospedagem gratuita no Render.",
+  "description": "MVP de comunidade com chat, chamadas e compartilhamento de tela.",
+  "main": "electron/main.js",
+  "author": "Concord",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "web": "node server.js",
+    "desktop": "electron .",
+    "package:win": "electron-packager . Concord --platform=win32 --arch=x64 --out=../Concord-desktop-build --overwrite --asar --no-prune --icon=electron/assets/concord.ico --ignore=node_modules",
+    "test": "node --test"
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=18"
+  },
+  "devDependencies": {
+    "@electron/packager": "20.3.0",
+    "electron": "43.4.0"
   }
 }
 
