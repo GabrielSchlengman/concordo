@@ -73,7 +73,7 @@ function cleanMime(value) {
 }
 
 function isInlineMime(mime) {
-  return /^(?:image\/(?:png|jpe?g|gif|webp)|audio\/(?:mpeg|ogg|wav|webm|mp4|x-m4a))$/.test(mime);
+  return /^(?:image\/(?:png|jpe?g|gif|webp)|audio\/(?:mpeg|ogg|wav|webm|mp4|x-m4a)|video\/(?:mp4|webm|ogg|quicktime|x-matroska)|application\/pdf|text\/plain)$/.test(mime);
 }
 
 function publicAttachment(file) {
@@ -334,7 +334,7 @@ function createServer() {
     }
 
     if (request.method === 'GET' && requestUrl.pathname === '/api/health') {
-      json(response, 200, { ok: true, name: 'Concord', version: '0.5.0' });
+      json(response, 200, { ok: true, name: 'Concord', version: '0.6.0' });
       return;
     }
 
@@ -580,7 +580,7 @@ function createServer() {
               json(response, 403, { error: 'Quem está compartilhando desativou as anotações.' }); return;
             }
             const source = body.item || body.stroke || {};
-            const tool = source.tool === 'eraser' ? 'eraser' : source.tool === 'text' ? 'text' : 'pen';
+            const tool = source.tool === 'eraser' ? 'eraser' : source.tool === 'text' ? 'text' : source.tool === 'pointer' ? 'pointer' : 'pen';
             const item = {
               id: cleanId(source.id, crypto.randomBytes(12).toString('hex')),
               tool, color: /^#[0-9a-fA-F]{6}$/.test(source.color) ? source.color : '#ff5d8f',
@@ -591,6 +591,9 @@ function createServer() {
               item.x = Math.max(0, Math.min(1, Number(source.x) || 0));
               item.y = Math.max(0, Math.min(1, Number(source.y) || 0));
               if (!item.text) { json(response, 400, { error: 'Texto vazio.' }); return; }
+            } else if (tool === 'pointer') {
+              item.x = Math.max(0, Math.min(1, Number(source.x) || 0));
+              item.y = Math.max(0, Math.min(1, Number(source.y) || 0));
             } else {
               const rawPoints = Array.isArray(source.points) ? source.points.slice(0, 1000) : [];
               item.points = rawPoints.map((point) => ({

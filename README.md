@@ -34,12 +34,14 @@ Alguns navegadores só liberam câmera, microfone e compartilhamento de tela em 
 
 - Canais de texto com histórico recente em memória.
 - Envio de fotos, áudios, mensagens de voz e arquivos de até 8 MB por clique, colagem ou arrastar e soltar.
+- Imagens, vídeos, áudios, PDF e texto podem ser visualizados no Concord; todos os anexos têm opção de download.
 - Lista de pessoas conectadas no texto e em cada canal de voz.
-- Áudio e vídeo via WebRTC com STUN/TURN, reconexão e renegociação automáticas, com modo de proteção de IP por retransmissão ativado por padrão.
+- Áudio e vídeo via WebRTC com STUN/TURN, reprodução compatível, recuperação automática e renegociação. O modo normal escolhe a rota que funciona; a proteção rígida por retransmissão é opcional.
 - Microfone, câmera, ensurdecimento do fone e volume geral ou individual.
 - Menu por participante no botão direito para silenciar, ajustar volume, esconder vídeo ou priorizar.
 - Compartilhamento de tela com preview local opcional.
-- Anotações sincronizadas por cima da tela compartilhada com caneta, borracha, texto, desfazer e apagar tudo.
+- Anotações sincronizadas por cima da tela compartilhada com caneta, borracha, texto, marcador de clique, desfazer e apagar tudo.
+- No aplicativo desktop, quem compartilha a tela inteira pode ver as marcações sobre a própria tela real, em uma camada transparente que não bloqueia cliques e é excluída da captura.
 - Controle do compartilhador para permitir ou bloquear anotações dos participantes.
 - Destaque automático de compartilhamentos, visualização em grade, modo foco e tela cheia.
 - Indicador visual de quem está falando e teste real de retorno do microfone.
@@ -53,7 +55,7 @@ Alguns navegadores só liberam câmera, microfone e compartilhamento de tela em 
 - Contas, servidores e mensagens não são salvos em banco de dados.
 - Os anexos ficam temporariamente na memória do serviço, podem expirar em até 24 horas e somam no máximo 64 MB nesta versão gratuita.
 - As chamadas usam conexão P2P, adequada para pequenos grupos.
-- O TURN público incluído é um fallback gratuito; para disponibilidade garantida, configure credenciais próprias pelas variáveis `TURN_URLS`, `TURN_USERNAME` e `TURN_CREDENTIAL` no Render.
+- O TURN público incluído é um fallback gratuito. A proteção rígida de IP exige um TURN confiável; para usá-la sem perder mídia, configure credenciais próprias pelas variáveis `TURN_URLS`, `TURN_USERNAME` e `TURN_CREDENTIAL` no Render.
 - Para grupos maiores, a chamada deve migrar de P2P para uma arquitetura SFU.
 
 ## Próximas etapas sugeridas

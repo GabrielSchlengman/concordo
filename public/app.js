@@ -21,10 +21,12 @@ const ICONS = {
   pencil: '<path d="m18 2 4 4L7 21H3v-4L18 2ZM14 6l4 4"/>',
   eraser: '<path d="m7 21-4-4L16 4a2.8 2.8 0 0 1 4 4L8 20a3 3 0 0 1-1 .7ZM6 14l5 5M9 21h12"/>',
   text: '<path d="M5 4h14M12 4v16M8 20h8"/>',
+  pointer: '<circle cx="12" cy="12" r="4"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/>',
   undo: '<path d="M9 7 4 12l5 5M4 12h9a7 7 0 0 1 7 7"/>',
   paperclip: '<path d="m21.4 11.6-8.9 8.9a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 0 1 5.7 5.7l-9.2 9.2a2 2 0 0 1-2.8-2.8l8.5-8.5"/>',
   waveform: '<path d="M3 10v4M7 7v10M11 3v18M15 8v8M19 5v14M23 10v4"/>',
   file: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6Z"/><path d="M14 2v6h6M8 13h8M8 17h6"/>',
+  download: '<path d="M12 3v12M7 10l5 5 5-5M5 21h14"/>',
   trash: '<path d="M3 6h18M8 6V3h8v3M19 6l-1 15H6L5 6M10 11v6M14 11v6"/>',
   send: '<path d="m22 2-7 20-4-9-9-4 20-7ZM11 13 22 2"/>',
   close: '<path d="m6 6 12 12M18 6 6 18"/>',
@@ -41,7 +43,7 @@ const DEFAULTS = {
   noiseSuppression: true, echoCancellation: true, autoGainControl: true,
   participantVideo: true, selfView: true, screenPreview: true,
   annotations: true, autoFocus: true, cameraQuality: '720', screenQuality: '1080',
-  protectIp: true, callSounds: true, soundVolume: 45,
+  protectIp: false, privacyModeVersion: 2, callSounds: true, soundVolume: 45, desktopOverlay: true,
   accent: '#8b5cf6', compact: false,
 };
 
@@ -55,7 +57,8 @@ function loadSettings() {
     if (!/^#[0-9a-f]{6}$/i.test(settings.accent)) settings.accent = DEFAULTS.accent;
     settings.sensitivity = Math.max(2, Math.min(45, Number(settings.sensitivity) || 12));
     settings.soundVolume = Math.max(0, Math.min(100, Number(settings.soundVolume) || 0));
-    settings.protectIp = settings.protectIp !== false;
+    if (Number(raw.privacyModeVersion) < 2) settings.protectIp = false;
+    settings.privacyModeVersion = 2;
     settings.callSounds = settings.callSounds !== false;
     return settings;
   } catch { return { ...DEFAULTS }; }
@@ -80,6 +83,7 @@ const state = {
   annotationPanelOpen: false, annotations: new Map(), ownAnnotationIds: [], pendingAvatar: null,
   knownCallUsers: new Map(), callRosterReady: false,
   pendingFiles: [], recorder: null, recordingStream: null, recordingStartedAt: 0, recordingTimer: null,
+  desktopOverlayAvailable: false,
 };
 
 const IDS = [
@@ -89,7 +93,7 @@ const IDS = [
   'connection-panel','connected-room','disconnect-voice','profile-button','profile-avatar','profile-fallback','self-name','self-status','bar-mic','bar-deafen','open-settings',
   'settings-overlay','close-settings','settings-avatar','settings-avatar-fallback','settings-name-display','display-name','avatar-input','remove-avatar','save-profile','profile-feedback',
   'input-device','output-device','master-volume','master-volume-value','mic-sensitivity','sensitivity-value','loopback-button','settings-meter','mic-loopback-audio',
-  'noise-suppression','noise-status','echo-cancellation','echo-status','auto-gain','gain-status','protect-ip','call-sounds','sound-volume','sound-volume-value',
+  'noise-suppression','noise-status','echo-cancellation','echo-status','auto-gain','gain-status','protect-ip','call-sounds','sound-volume','sound-volume-value','desktop-overlay','desktop-overlay-status',
   'setting-participant-video','setting-self-view','setting-screen-preview','setting-annotations','setting-auto-focus','camera-device','camera-quality','screen-quality','accent-color','compact-mode',
   'context-menu','toast-stack',
 ];
@@ -195,7 +199,9 @@ function connectEvents() {
       state.textUsers = payload.users || [];
       state.voiceChannels = payload.voiceChannels || state.voiceChannels;
       renderPresence();
-      if (state.voiceRoom && payload.self?.voiceRoom !== state.voiceRoom) {
+      if (!state.voiceRoom && payload.self?.voiceRoom) {
+        joinCall(payload.self.voiceRoom).catch(() => {});
+      } else if (state.voiceRoom && payload.self?.voiceRoom !== state.voiceRoom) {
         api('/api/call', { action: 'join', voiceRoom: state.voiceRoom, media: mediaState() })
           .then((result) => syncCallUsers(result.users || []))
           .catch((error) => toast(error.message, 'error'));
@@ -280,20 +286,56 @@ function formatBytes(size) {
 
 function renderAttachment(attachment) {
   const mime = String(attachment.mime || '');
+  const block = document.createElement('div'); block.className = 'attachment-block';
+  let previewable = false;
   if (/^image\/(png|jpe?g|gif|webp)$/.test(mime)) {
-    const link = document.createElement('a'); link.href = attachment.url; link.target = '_blank'; link.rel = 'noopener';
     const image = document.createElement('img'); image.className = 'attachment-image'; image.src = attachment.url; image.alt = attachment.name || 'Imagem enviada'; image.loading = 'lazy';
-    image.addEventListener('error', () => { link.replaceWith(expiredAttachment()); }); link.append(image); return link;
-  }
-  if (/^audio\/(mpeg|ogg|wav|webm|mp4|x-m4a)$/.test(mime)) {
+    image.addEventListener('error', () => { block.replaceWith(expiredAttachment()); }); image.addEventListener('click', () => openAttachmentViewer(attachment));
+    block.append(image); previewable = true;
+  } else if (/^video\/(mp4|webm|ogg|quicktime|x-matroska)$/.test(mime)) {
+    const video = document.createElement('video'); video.className = 'attachment-video'; video.controls = true; video.preload = 'metadata'; video.src = attachment.url;
+    video.addEventListener('error', () => video.replaceWith(expiredAttachment())); block.append(video); previewable = true;
+  } else if (/^audio\/(mpeg|ogg|wav|webm|mp4|x-m4a)$/.test(mime)) {
     const audio = document.createElement('audio'); audio.className = 'attachment-audio'; audio.controls = true; audio.preload = 'metadata'; audio.src = attachment.url;
-    audio.addEventListener('error', () => audio.replaceWith(expiredAttachment())); return audio;
+    audio.addEventListener('error', () => audio.replaceWith(expiredAttachment())); block.append(audio); previewable = true;
+  } else {
+    const card = document.createElement('div'); card.className = 'file-card'; card.innerHTML = iconSvg('file');
+    const copy = document.createElement('span'); copy.className = 'file-copy';
+    const name = document.createElement('strong'); name.textContent = attachment.name || 'Arquivo';
+    const size = document.createElement('small'); size.textContent = `${formatBytes(Number(attachment.size) || 0)} · ${mime || 'arquivo'}`; copy.append(name, size); card.append(copy); block.append(card);
+    previewable = mime === 'application/pdf' || mime === 'text/plain';
   }
-  const link = document.createElement('a'); link.className = 'file-card'; link.href = `${attachment.url}?download=1`; link.download = attachment.name || 'arquivo';
-  link.innerHTML = iconSvg('file');
-  const copy = document.createElement('span'); copy.className = 'file-copy';
-  const name = document.createElement('strong'); name.textContent = attachment.name || 'Arquivo';
-  const size = document.createElement('small'); size.textContent = formatBytes(Number(attachment.size) || 0); copy.append(name, size); link.append(copy); return link;
+  const footer = document.createElement('div'); footer.className = 'attachment-footer';
+  const label = document.createElement('span'); label.textContent = `${attachment.name || 'Arquivo'} · ${formatBytes(Number(attachment.size) || 0)}`; footer.append(label);
+  if (previewable) {
+    const view = document.createElement('button'); view.type = 'button'; view.innerHTML = `${iconSvg('eye')} Visualizar`;
+    view.addEventListener('click', () => openAttachmentViewer(attachment)); footer.append(view);
+  }
+  const download = document.createElement('a'); download.href = `${attachment.url}?download=1`; download.download = attachment.name || 'arquivo'; download.innerHTML = `${iconSvg('download')} Baixar`; footer.append(download);
+  block.append(footer); return block;
+}
+
+function openAttachmentViewer(attachment) {
+  const overlay = document.createElement('div'); overlay.className = 'attachment-viewer-overlay';
+  const dialog = document.createElement('section'); dialog.className = 'attachment-viewer';
+  const header = document.createElement('header');
+  const copy = document.createElement('div'); const title = document.createElement('strong'); title.textContent = attachment.name || 'Arquivo';
+  const detail = document.createElement('small'); detail.textContent = `${attachment.mime || 'arquivo'} · ${formatBytes(Number(attachment.size) || 0)}`; copy.append(title, detail);
+  const download = document.createElement('a'); download.href = `${attachment.url}?download=1`; download.download = attachment.name || 'arquivo'; download.innerHTML = `${iconSvg('download')} Baixar`;
+  const close = document.createElement('button'); close.className = 'icon-button'; close.innerHTML = iconSvg('close'); close.ariaLabel = 'Fechar'; header.append(copy, download, close);
+  const content = document.createElement('div'); content.className = 'attachment-viewer-content'; const mime = String(attachment.mime || '');
+  if (mime.startsWith('image/')) { const image = document.createElement('img'); image.src = attachment.url; image.alt = attachment.name || ''; content.append(image); }
+  else if (mime.startsWith('video/')) { const video = document.createElement('video'); video.src = attachment.url; video.controls = true; video.autoplay = true; content.append(video); }
+  else if (mime.startsWith('audio/')) { const audio = document.createElement('audio'); audio.src = attachment.url; audio.controls = true; audio.autoplay = true; content.append(audio); }
+  else if (mime === 'application/pdf') { const frame = document.createElement('iframe'); frame.src = `${attachment.url}?preview=1`; frame.title = attachment.name || 'PDF'; content.append(frame); }
+  else if (mime === 'text/plain') {
+    const pre = document.createElement('pre'); pre.textContent = 'Carregando…'; content.append(pre);
+    fetch(`${attachment.url}?preview=1`).then((response) => response.ok ? response.text() : Promise.reject()).then((text) => { pre.textContent = text.slice(0, 300_000); }).catch(() => { pre.textContent = 'Este arquivo expirou ou não pôde ser aberto.'; });
+  }
+  const finish = () => { document.removeEventListener('keydown', onKey); overlay.remove(); };
+  const onKey = (event) => { if (event.key === 'Escape') finish(); };
+  close.addEventListener('click', finish); overlay.addEventListener('click', (event) => { if (event.target === overlay) finish(); }); document.addEventListener('keydown', onKey);
+  dialog.append(header, content); overlay.append(dialog); document.body.append(overlay);
 }
 
 function expiredAttachment() {
@@ -609,7 +651,7 @@ function createPeer(userId) {
     id: userId, pc, polite: state.clientId.localeCompare(userId) > 0,
     makingOffer: false, ignoreOffer: false, settingRemoteAnswer: false,
     pendingCandidates: [], remoteStreams: new Map(), description: {},
-    audioNodes: [], reconnectAttempts: 0, disconnectTimer: null,
+    audioNodes: [], reconnectAttempts: 0, disconnectTimer: null, connectTimer: null,
   };
   state.peers.set(userId, peer);
   addLocalTracks(peer);
@@ -630,8 +672,8 @@ function createPeer(userId) {
   pc.onconnectionstatechange = () => {
     const status = pc.connectionState;
     if (status === 'connected') {
-      peer.reconnectAttempts = 0; clearTimeout(peer.disconnectTimer);
-      el.callStatus.textContent = `${Math.max(1, state.callUsers.length)} na chamada · ${state.settings.protectIp ? 'IP protegido' : 'conexão direta'}`;
+      peer.reconnectAttempts = 0; clearTimeout(peer.disconnectTimer); clearTimeout(peer.connectTimer);
+      el.callStatus.textContent = `${Math.max(1, state.callUsers.length)} na chamada · mídia conectada${state.settings.protectIp ? ' · relay protegido' : ''}`;
     } else if (status === 'failed') {
       recoverPeer(peer);
     } else if (status === 'disconnected') {
@@ -641,8 +683,16 @@ function createPeer(userId) {
       }, 6000);
     }
   };
+  schedulePeerWatchdog(peer);
   announceMediaDescription(userId);
   return peer;
+}
+
+function schedulePeerWatchdog(peer) {
+  clearTimeout(peer.connectTimer);
+  peer.connectTimer = setTimeout(() => {
+    if (state.peers.get(peer.id) === peer && !['connected', 'closed'].includes(peer.pc.connectionState)) recoverPeer(peer);
+  }, 9000);
 }
 
 async function recoverPeer(peer) {
@@ -654,6 +704,7 @@ async function recoverPeer(peer) {
       peer.makingOffer = true;
       await peer.pc.setLocalDescription(await peer.pc.createOffer({ iceRestart: true }));
       await sendSignal(peer.id, { description: peer.pc.localDescription });
+      schedulePeerWatchdog(peer);
     } catch (error) { console.warn('reinício ICE', error); }
     finally { peer.makingOffer = false; }
     return;
@@ -732,24 +783,24 @@ function setupRemoteAudio(peer, stream, track) {
   if (peer.audioNodes.some((node) => node.trackId === track.id)) return;
   const audioStream = new MediaStream([track]);
   const audio = document.createElement('audio');
-  audio.autoplay = true; audio.playsInline = true; audio.srcObject = audioStream;
+  audio.autoplay = true; audio.playsInline = true; audio.srcObject = audioStream; audio.className = 'remote-call-audio';
+  document.body.append(audio);
   const entry = { trackId: track.id, audio, source: null, gain: null, analyser: null };
   const context = getAudioContext();
   if (context) {
     try {
       entry.source = context.createMediaStreamSource(audioStream);
-      entry.gain = context.createGain();
       entry.analyser = context.createAnalyser(); entry.analyser.fftSize = 512;
-      entry.source.connect(entry.gain); entry.source.connect(entry.analyser); entry.gain.connect(context.destination);
-      audio.muted = true;
+      entry.source.connect(entry.analyser);
       state.audioMonitors.set(peer.id, entry.analyser);
       startVoiceMeterLoop();
     } catch { /* usa elemento de áudio abaixo */ }
   }
   peer.audioNodes.push(entry);
+  setOutputDevice(state.settings.speakerId);
   applyRemoteAudio(peer.id);
   audio.play().catch(() => {
-    if (!entry.gain) toast('Clique em qualquer lugar para liberar o áudio da chamada.', 'error');
+    toast('Clique em qualquer lugar para liberar o áudio da chamada.', 'error');
   });
 }
 
@@ -775,18 +826,17 @@ function applyRemoteAudio(userId = null) {
     const silent = state.deafened || preference.muted;
     const gainValue = silent ? 0 : (state.settings.masterVolume / 100) * (preference.volume / 100);
     for (const node of peer.audioNodes) {
-      if (node.gain) node.gain.gain.setTargetAtTime(gainValue, state.audioContext.currentTime, 0.015);
-      else { node.audio.muted = silent; node.audio.volume = Math.min(1, gainValue); node.audio.play().catch(() => {}); }
+      node.audio.muted = silent; node.audio.volume = Math.min(1, gainValue); node.audio.play().catch(() => {});
     }
   }
 }
 
 function removePeer(userId) {
   const peer = state.peers.get(userId); if (!peer) return;
-  clearTimeout(peer.disconnectTimer);
+  clearTimeout(peer.disconnectTimer); clearTimeout(peer.connectTimer);
   peer.audioNodes.forEach((node) => {
     try { node.source?.disconnect(); node.gain?.disconnect(); } catch { /* já removido */ }
-    node.audio.srcObject = null;
+    node.audio.srcObject = null; node.audio.remove();
   });
   state.audioMonitors.delete(userId); state.speaking.delete(userId);
   peer.pc.ontrack = null; peer.pc.onicecandidate = null; peer.pc.close();
@@ -864,6 +914,10 @@ async function toggleScreen() {
     const track = state.screenStream.getVideoTracks()[0];
     track.onended = () => stopScreen();
     await replaceLocalTrack('screen', track, state.screenStream);
+    if (window.concordDesktop?.isDesktop && state.settings.desktopOverlay && state.desktopOverlayAvailable) {
+      await window.concordDesktop.startAnnotationOverlay().catch(() => false);
+      syncDesktopAnnotationOverlay();
+    }
     if (state.settings.autoFocus) { state.layout = 'focus'; state.autoFocusedShareId = state.clientId; }
     playCue('screen'); updateControlStates(); renderVideoGrid(); postMediaState();
     toast('Sua tela está sendo compartilhada.');
@@ -892,7 +946,9 @@ async function chooseDesktopSource() {
       const image = document.createElement('img'); image.src = source.thumbnail; image.alt = '';
       const label = document.createElement('span'); label.textContent = source.name; button.append(image, label);
       button.addEventListener('click', async () => {
-        const accepted = await window.concordDesktop.selectDisplaySource(source.id).catch(() => false); finish(Boolean(accepted));
+        const selected = await window.concordDesktop.selectDisplaySource(source.id).catch(() => ({ accepted: false, overlayAvailable: false }));
+        state.desktopOverlayAvailable = selected?.overlayAvailable === true;
+        finish(selected?.accepted === true);
       });
       grid.append(button);
     });
@@ -907,6 +963,7 @@ function stopScreen(notify = true) {
     if (sender) sender.replaceTrack(null).catch(() => {});
   }
   state.screenStream.getTracks().forEach((track) => { track.onended = null; track.stop(); }); state.screenStream = null;
+  window.concordDesktop?.stopAnnotationOverlay?.().catch(() => {}); state.desktopOverlayAvailable = false;
   state.annotations.delete(state.clientId); state.autoFocusedShareId = null;
   if (state.activeShareOwnerId === state.clientId) { state.activeShareOwnerId = null; state.annotationPanelOpen = false; }
   if (!state.pinnedUserId) state.layout = 'grid';
@@ -931,7 +988,10 @@ function makeVideoTile({ key, user, stream, screen = false, local = false, hidde
   if (hiddenVideo) tile.classList.add('video-hidden');
   const video = document.createElement('video'); video.autoplay = true; video.playsInline = true; video.muted = local;
   if (stream) { video.srcObject = stream; tile.classList.add('has-video'); video.play().catch(() => {}); }
-  const fallback = document.createElement('div'); fallback.className = 'tile-fallback'; fallback.append(avatarNode(user));
+  const fallback = document.createElement('div'); fallback.className = 'tile-fallback';
+  if (screen && !stream) {
+    const waiting = document.createElement('div'); waiting.className = 'screen-wait'; waiting.innerHTML = `${iconSvg('screen')}<strong>Conectando à tela…</strong><small>O Concord está recuperando a transmissão.</small>`; fallback.append(waiting);
+  } else fallback.append(avatarNode(user));
   const label = document.createElement('div'); label.className = 'tile-label';
   label.innerHTML = iconSvg(user.media?.micEnabled === false ? 'mic-off' : 'mic');
   const text = document.createElement('span'); text.textContent = `${user.name}${local ? ' (você)' : ''}`; label.append(text);
@@ -1034,14 +1094,17 @@ function setupDrawingCanvas(canvas, shareOwnerId, enabled) {
     if (!activeItem) return;
     const item = activeItem; activeItem = null;
     if (item.points.length < 2) return;
-    addAnnotationItem(shareOwnerId, item, true);
-    try { await api('/api/annotation', { action: 'item', shareOwnerId, item }); }
-    catch (error) { removeAnnotationItem(shareOwnerId, item.id); toast(error.message, 'error'); }
+    await publishAnnotationItem(shareOwnerId, item);
   };
   if (enabled) {
     canvas.addEventListener('pointerdown', (event) => {
       event.preventDefault();
       if (state.drawTool === 'text') { createTextAnnotation(canvas, shareOwnerId, pointFromEvent(event)); return; }
+      if (state.drawTool === 'pointer') {
+        const point = pointFromEvent(event);
+        publishAnnotationItem(shareOwnerId, { id: crypto.randomUUID(), tool: 'pointer', x: point.x, y: point.y, color: state.drawColor, width: state.drawSize });
+        return;
+      }
       canvas.setPointerCapture(event.pointerId);
       activeItem = {
         id: crypto.randomUUID(), tool: state.drawTool, color: state.drawColor,
@@ -1066,9 +1129,7 @@ function createTextAnnotation(canvas, ownerId, point) {
   const finish = async (save) => {
     const text = input.value.trim(); input.remove(); if (!save || !text) return;
     const item = { id: crypto.randomUUID(), tool: 'text', text, x: point.x, y: point.y, color: state.drawColor, width: state.drawSize };
-    addAnnotationItem(ownerId, item, true);
-    try { await api('/api/annotation', { action: 'item', shareOwnerId: ownerId, item }); }
-    catch (error) { removeAnnotationItem(ownerId, item.id); toast(error.message, 'error'); }
+    await publishAnnotationItem(ownerId, item);
   };
   input.addEventListener('keydown', (event) => {
     if (event.key === 'Enter') { event.preventDefault(); finish(true); }
@@ -1078,12 +1139,19 @@ function createTextAnnotation(canvas, ownerId, point) {
   canvas.parentElement.append(input); input.focus();
 }
 
+async function publishAnnotationItem(ownerId, item) {
+  addAnnotationItem(ownerId, item, true);
+  try { await api('/api/annotation', { action: 'item', shareOwnerId: ownerId, item }); }
+  catch (error) { removeAnnotationItem(ownerId, item.id); toast(error.message, 'error'); }
+}
+
 function addAnnotationItem(ownerId, item, own = false) {
   const items = state.annotations.get(ownerId) || [];
   if (!items.some((existing) => existing.id === item.id)) items.push(item);
   if (items.length > 500) items.shift(); state.annotations.set(ownerId, items);
   if (own && !state.ownAnnotationIds.some((entry) => entry.id === item.id)) state.ownAnnotationIds.push({ ownerId, id: item.id });
   document.querySelectorAll(`canvas[data-share-owner="${CSS.escape(ownerId)}"]`).forEach((canvas) => redrawCanvas(canvas, ownerId));
+  if (ownerId === state.clientId) syncDesktopAnnotationOverlay();
 }
 
 function removeAnnotationItem(ownerId, itemId) {
@@ -1091,6 +1159,12 @@ function removeAnnotationItem(ownerId, itemId) {
   state.annotations.set(ownerId, items.filter((item) => item.id !== itemId));
   state.ownAnnotationIds = state.ownAnnotationIds.filter((entry) => entry.id !== itemId);
   document.querySelectorAll(`canvas[data-share-owner="${CSS.escape(ownerId)}"]`).forEach((canvas) => redrawCanvas(canvas, ownerId));
+  if (ownerId === state.clientId) syncDesktopAnnotationOverlay();
+}
+
+function syncDesktopAnnotationOverlay() {
+  if (!window.concordDesktop?.updateAnnotationOverlay || !state.screenStream || !state.settings.desktopOverlay || !state.desktopOverlayAvailable) return;
+  window.concordDesktop.updateAnnotationOverlay({ items: state.annotations.get(state.clientId) || [] }).catch(() => {});
 }
 
 function redrawCanvas(canvas, ownerId, temporary = null) {
@@ -1107,6 +1181,13 @@ function redrawCanvas(canvas, ownerId, temporary = null) {
       context.fillStyle = item.color; context.font = `600 ${Math.max(14, item.width * 4) * ratio}px Inter, sans-serif`;
       context.fillText(item.text, drawBox.x + item.x * drawBox.width, drawBox.y + item.y * drawBox.height); continue;
     }
+    if (item.tool === 'pointer') {
+      const x = drawBox.x + item.x * drawBox.width; const y = drawBox.y + item.y * drawBox.height;
+      const radius = Math.max(13, item.width * 3) * ratio;
+      context.strokeStyle = item.color; context.lineWidth = Math.max(2, item.width / 2) * ratio;
+      context.beginPath(); context.arc(x, y, radius, 0, Math.PI * 2); context.moveTo(x - radius * 1.45, y); context.lineTo(x + radius * 1.45, y); context.moveTo(x, y - radius * 1.45); context.lineTo(x, y + radius * 1.45); context.stroke();
+      continue;
+    }
     if (!item.points?.length) continue;
     context.beginPath(); context.strokeStyle = item.color; context.lineWidth = item.width * ratio;
     context.moveTo(drawBox.x + item.points[0].x * drawBox.width, drawBox.y + item.points[0].y * drawBox.height);
@@ -1121,6 +1202,7 @@ function handleAnnotation(payload) {
   if (payload.action === 'clear') {
     state.annotations.delete(ownerId); state.ownAnnotationIds = state.ownAnnotationIds.filter((entry) => entry.ownerId !== ownerId);
     document.querySelectorAll(`canvas[data-share-owner="${CSS.escape(ownerId)}"]`).forEach((canvas) => redrawCanvas(canvas, ownerId));
+    if (ownerId === state.clientId) syncDesktopAnnotationOverlay();
   } else if (payload.action === 'remove') removeAnnotationItem(ownerId, payload.itemId);
   else if (payload.item || payload.stroke) addAnnotationItem(ownerId, payload.item || payload.stroke, payload.from === state.clientId);
 }
@@ -1334,6 +1416,12 @@ function syncSettingsControls() {
   el.settingScreenPreview.checked = state.settings.screenPreview; el.settingAnnotations.checked = state.settings.annotations; el.settingAutoFocus.checked = state.settings.autoFocus;
   el.protectIp.checked = state.settings.protectIp; el.callSounds.checked = state.settings.callSounds;
   el.soundVolume.value = state.settings.soundVolume; el.soundVolumeValue.value = `${state.settings.soundVolume}%`;
+  el.desktopOverlay.checked = state.settings.desktopOverlay;
+  el.desktopOverlay.disabled = !window.concordDesktop?.isDesktop;
+  el.desktopOverlay.parentElement.classList.toggle('setting-unavailable', !window.concordDesktop?.isDesktop);
+  el.desktopOverlayStatus.textContent = window.concordDesktop?.isDesktop
+    ? 'Ao compartilhar a tela inteira, mostra as marcações sobre ela sem bloquear seus cliques.'
+    : 'O navegador não pode desenhar sobre outros programas. Esta opção funciona no aplicativo.';
   el.cameraQuality.value = state.settings.cameraQuality; el.screenQuality.value = state.settings.screenQuality;
   el.accentColor.value = state.settings.accent; el.compactMode.checked = state.settings.compact;
 }
@@ -1488,6 +1576,13 @@ el.callSounds.addEventListener('change', () => {
 });
 el.soundVolume.addEventListener('input', () => {
   state.settings.soundVolume = Number(el.soundVolume.value); el.soundVolumeValue.value = `${state.settings.soundVolume}%`; saveSettings();
+});
+el.desktopOverlay.addEventListener('change', async () => {
+  state.settings.desktopOverlay = el.desktopOverlay.checked; saveSettings();
+  if (!state.screenStream || !window.concordDesktop?.isDesktop) return;
+  if (state.settings.desktopOverlay && state.desktopOverlayAvailable) {
+    await window.concordDesktop.startAnnotationOverlay().catch(() => false); syncDesktopAnnotationOverlay();
+  } else window.concordDesktop.stopAnnotationOverlay?.().catch(() => {});
 });
 
 const processSettings = [

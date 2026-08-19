@@ -1,5 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const { createServer } = require('./server');
 
 async function withServer(run) {
@@ -54,10 +56,10 @@ async function closeEvents(...sessions) {
   sessions.forEach((session) => session.controller.abort());
 }
 
-test('publica a versão 0.5 e os servidores ICE', async () => {
+test('publica a versão 0.6 e os servidores ICE', async () => {
   await withServer(async (baseUrl) => {
     const health = await fetch(`${baseUrl}/api/health`);
-    assert.deepEqual(await health.json(), { ok: true, name: 'Concord', version: '0.5.0' });
+    assert.deepEqual(await health.json(), { ok: true, name: 'Concord', version: '0.6.0' });
     assert.equal(health.headers.get('x-content-type-options'), 'nosniff');
     const ice = await (await fetch(`${baseUrl}/api/ice`)).json();
     assert.ok(ice.iceServers.some((server) => String(server.urls).includes('turn:')));
@@ -71,10 +73,24 @@ test('entrega a interface real sem os botões fictícios antigos', async () => {
     assert.match(html, /Preview da minha tela/);
     assert.match(html, /Permitir desenhos/);
     assert.match(html, /Teste do microfone/);
-    assert.match(html, /Proteger meu IP/);
+    assert.match(html, /Proteção rígida de IP/);
     assert.match(html, /Gravar mensagem de voz/);
+    assert.match(html, /Anotações por cima da minha tela/);
+    assert.match(html, /Marcar onde clicar/);
     assert.doesNotMatch(html, /Adicionar servidor|Anexar arquivo/);
   });
+});
+
+test('mantém mídia compatível e prepara a camada segura de anotação do aplicativo', () => {
+  const app = fs.readFileSync(path.join(__dirname, 'public', 'app.js'), 'utf8');
+  const main = fs.readFileSync(path.join(__dirname, 'electron', 'main.js'), 'utf8');
+  const overlay = fs.readFileSync(path.join(__dirname, 'electron', 'annotation-overlay.js'), 'utf8');
+  assert.match(app, /protectIp: false/);
+  assert.match(app, /className = 'remote-call-audio'/);
+  assert.match(app, /startAnnotationOverlay/);
+  assert.match(main, /setIgnoreMouseEvents\(true/);
+  assert.match(main, /setContentProtection\(true\)/);
+  assert.match(overlay, /item\.tool === 'pointer'/);
 });
 
 test('mantém texto e voz separados, encaminha sinais e sincroniza desenhos', async () => {
@@ -106,11 +122,24 @@ test('mantém texto e voz separados, encaminha sinais e sincroniza desenhos', as
     const drawing = await nextEvent(gabriel, (event) => event.type === 'annotation' && event.action === 'item');
     assert.equal(drawing.item.id, 'traco-1');
     assert.equal(drawing.from, 'amigo-1');
+    await post(baseUrl, '/api/annotation', {
+      clientId: 'amigo-1', shareOwnerId: 'gabriel-1', action: 'item',
+      item: { id: 'clique-1', tool: 'pointer', x: .45, y: .55, color: '#ffd166', width: 4 },
+    });
+    const pointer = await nextEvent(gabriel, (event) => event.type === 'annotation' && event.item?.id === 'clique-1');
+    assert.equal(pointer.item.tool, 'pointer');
+    await post(baseUrl, '/api/annotation', {
+      clientId: 'amigo-1', shareOwnerId: 'gabriel-1', action: 'item',
+      item: { id: 'texto-1', tool: 'text', text: 'clique aqui', x: .5, y: .6, color: '#ffffff', width: 4 },
+    });
+    const textItem = await nextEvent(gabriel, (event) => event.type === 'annotation' && event.item?.id === 'texto-1');
+    assert.equal(textItem.item.text, 'clique aqui');
 
     const atrasado = await openEvents(baseUrl, 'cafe', 'atrasado-1', 'Atrasado');
     await nextEvent(atrasado, (event) => event.type === 'hello');
     const joined = await post(baseUrl, '/api/call', { clientId: 'atrasado-1', action: 'join', voiceRoom: 'lobby', media: { micEnabled: true } });
     assert.equal(joined.annotations[0].items[0].id, 'traco-1');
+    assert.equal(joined.annotations[0].items.length, 3);
 
     await post(baseUrl, '/api/media-state', {
       clientId: 'gabriel-1', media: { micEnabled: true, screenSharing: true, annotationsEnabled: false },
@@ -135,18 +164,30 @@ test('envia anexos temporários no chat e força download de arquivos arbitrári
     await nextEvent(session, (event) => event.type === 'hello');
     const upload = await fetch(`${baseUrl}/api/upload?clientId=arquivo-1`, {
       method: 'POST',
-      headers: { 'Content-Type': 'text/plain', 'X-File-Name': encodeURIComponent('notas.txt') },
+      headers: { 'Content-Type': 'application/zip', 'X-File-Name': encodeURIComponent('notas.zip') },
       body: 'arquivo seguro',
     });
     assert.equal(upload.status, 201);
     const attachment = (await upload.json()).attachment;
     await post(baseUrl, '/api/message', { clientId: 'arquivo-1', room: 'geral', text: '', attachments: [attachment.id] });
     const message = await nextEvent(session, (event) => event.type === 'message');
-    assert.equal(message.message.attachments[0].name, 'notas.txt');
+    assert.equal(message.message.attachments[0].name, 'notas.zip');
     const download = await fetch(`${baseUrl}${attachment.url}`);
     assert.equal(download.headers.get('content-type'), 'application/octet-stream');
     assert.match(download.headers.get('content-disposition'), /^attachment/);
     assert.equal(await download.text(), 'arquivo seguro');
+
+    const previewUpload = await fetch(`${baseUrl}/api/upload?clientId=arquivo-1`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain', 'X-File-Name': encodeURIComponent('leia.txt') },
+      body: 'prévia dentro do Concord',
+    });
+    const previewAttachment = (await previewUpload.json()).attachment;
+    const preview = await fetch(`${baseUrl}${previewAttachment.url}?preview=1`);
+    assert.equal(preview.headers.get('content-type'), 'text/plain');
+    assert.match(preview.headers.get('content-disposition'), /^inline/);
+    const forcedDownload = await fetch(`${baseUrl}${previewAttachment.url}?download=1`);
+    assert.equal(forcedDownload.headers.get('content-type'), 'application/octet-stream');
     await closeEvents(session);
   });
 });

@@ -1,16 +1,76 @@
-const { app, BrowserWindow, desktopCapturer, ipcMain, session, shell } = require('electron/main');
+const { app, BrowserWindow, desktopCapturer, ipcMain, screen, session, shell } = require('electron/main');
 const path = require('node:path');
 const { createServer } = require('../server');
 
 let localServer;
 let appOrigin;
 let selectedDisplaySourceId = null;
+let activeDisplaySource = null;
+let annotationOverlay = null;
+let annotationOverlayState = { items: [] };
 const allowedSourceIds = new Map();
 const CLOUD_URL = process.env.CONCORD_SERVER_URL || process.env.LUME_SERVER_URL || 'https://lume-app-ym0d.onrender.com';
 
 function isTrustedUrl(value) {
   try { return Boolean(appOrigin) && new URL(value).origin === appOrigin; }
   catch { return false; }
+}
+
+function isTrustedSender(event) {
+  return isTrustedUrl(event.senderFrame?.url || '') && isTrustedUrl(event.sender.getURL());
+}
+
+function overlayDisplay() {
+  const displays = screen.getAllDisplays();
+  const displayId = String(activeDisplaySource?.displayId || '');
+  return displays.find((display) => String(display.id) === displayId) || screen.getDisplayNearestPoint(screen.getCursorScreenPoint()) || screen.getPrimaryDisplay();
+}
+
+async function showAnnotationOverlay() {
+  if (!activeDisplaySource?.isScreen) return false;
+  const display = overlayDisplay();
+  if (annotationOverlay && !annotationOverlay.isDestroyed()) {
+    annotationOverlay.setBounds(display.bounds);
+    annotationOverlay.showInactive();
+    annotationOverlay.webContents.send('annotation-overlay-state', annotationOverlayState);
+    return true;
+  }
+  annotationOverlay = new BrowserWindow({
+    ...display.bounds,
+    transparent: true,
+    frame: false,
+    focusable: false,
+    resizable: false,
+    movable: false,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    skipTaskbar: true,
+    show: false,
+    hasShadow: false,
+    alwaysOnTop: true,
+    backgroundColor: '#00000000',
+    webPreferences: {
+      preload: path.join(__dirname, 'annotation-preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  });
+  annotationOverlay.setIgnoreMouseEvents(true, { forward: true });
+  annotationOverlay.setAlwaysOnTop(true, 'screen-saver');
+  annotationOverlay.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  annotationOverlay.setContentProtection(true);
+  annotationOverlay.on('closed', () => { annotationOverlay = null; });
+  await annotationOverlay.loadFile(path.join(__dirname, 'annotation-overlay.html'));
+  annotationOverlay.webContents.send('annotation-overlay-state', annotationOverlayState);
+  annotationOverlay.showInactive();
+  return true;
+}
+
+function hideAnnotationOverlay() {
+  if (annotationOverlay && !annotationOverlay.isDestroyed()) annotationOverlay.destroy();
+  annotationOverlay = null; activeDisplaySource = null; annotationOverlayState = { items: [] };
 }
 
 function startLocalServer() {
@@ -42,6 +102,7 @@ function configureMediaPermissions() {
       }
       const sources = await desktopCapturer.getSources({ types: ['screen', 'window'] });
       const source = sources.find((item) => item.id === selectedDisplaySourceId);
+      activeDisplaySource = source ? { id: source.id, displayId: source.display_id || '', isScreen: source.id.startsWith('screen:') } : null;
       selectedDisplaySourceId = null;
       allowedSourceIds.clear();
       if (!source) {
@@ -67,21 +128,42 @@ function registerDesktopHandlers() {
       thumbnailSize: { width: 320, height: 180 },
       fetchWindowIcons: true,
     });
-    allowedSourceIds.set(event.sender.id, new Set(sources.map((source) => source.id)));
+    allowedSourceIds.set(event.sender.id, new Map(sources.map((source) => [source.id, { displayId: source.display_id || '', isScreen: source.id.startsWith('screen:') }])));
     return sources.map((source) => ({
       id: source.id,
       name: source.name,
       thumbnail: source.thumbnail.toDataURL(),
       appIcon: source.appIcon?.toDataURL() || null,
+      overlayAvailable: source.id.startsWith('screen:'),
     }));
   });
 
   ipcMain.handle('desktop:select-source', (event, sourceId) => {
-    if (!isTrustedUrl(event.senderFrame?.url || '') || !isTrustedUrl(event.sender.getURL()) || typeof sourceId !== 'string') return false;
-    if (!allowedSourceIds.get(event.sender.id)?.has(sourceId)) return false;
+    if (!isTrustedSender(event) || typeof sourceId !== 'string') return { accepted: false, overlayAvailable: false };
+    const sourceMeta = allowedSourceIds.get(event.sender.id)?.get(sourceId);
+    if (!sourceMeta) return { accepted: false, overlayAvailable: false };
     selectedDisplaySourceId = sourceId.slice(0, 300);
     allowedSourceIds.delete(event.sender.id);
+    return { accepted: true, overlayAvailable: sourceMeta.isScreen };
+  });
+
+  ipcMain.handle('desktop:start-annotation-overlay', async (event) => {
+    if (!isTrustedSender(event)) return false;
+    return showAnnotationOverlay();
+  });
+
+  ipcMain.handle('desktop:update-annotation-overlay', (event, payload) => {
+    if (!isTrustedSender(event)) return false;
+    const json = JSON.stringify(payload || {});
+    if (json.length > 600_000) return false;
+    annotationOverlayState = JSON.parse(json);
+    if (annotationOverlay && !annotationOverlay.isDestroyed()) annotationOverlay.webContents.send('annotation-overlay-state', annotationOverlayState);
     return true;
+  });
+
+  ipcMain.handle('desktop:stop-annotation-overlay', (event) => {
+    if (!isTrustedSender(event)) return false;
+    hideAnnotationOverlay(); return true;
   });
 }
 
@@ -105,6 +187,7 @@ function createWindow(url) {
   });
 
   window.once('ready-to-show', () => window.show());
+  window.on('closed', hideAnnotationOverlay);
   window.loadURL(url);
 
   window.webContents.setWindowOpenHandler(({ url: targetUrl }) => {
@@ -147,6 +230,7 @@ app.on('second-instance', () => {
 });
 
 app.on('window-all-closed', () => {
+  hideAnnotationOverlay();
   localServer?.close();
   if (process.platform !== 'darwin') app.quit();
 });

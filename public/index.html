@@ -85,6 +85,7 @@
             <button class="annotation-tool active" data-draw-tool="pen" title="Caneta"><span data-icon="pencil"></span><small>Caneta</small></button>
             <button class="annotation-tool" data-draw-tool="eraser" title="Borracha"><span data-icon="eraser"></span><small>Borracha</small></button>
             <button class="annotation-tool" data-draw-tool="text" title="Escrever"><span data-icon="text"></span><small>Texto</small></button>
+            <button class="annotation-tool" data-draw-tool="pointer" title="Marcar onde clicar"><span data-icon="pointer"></span><small>Clique</small></button>
             <label class="draw-size">Tamanho<input id="draw-size" type="range" min="2" max="24" value="4"></label>
           </div>
           <div class="annotation-colors">
@@ -182,7 +183,7 @@
         <label class="switch-row"><span><strong>Cancelamento de eco</strong><small id="echo-status">Verificando suporte…</small></span><input id="echo-cancellation" type="checkbox" checked><i></i></label>
         <label class="switch-row"><span><strong>Controle automático de ganho</strong><small id="gain-status">Verificando suporte…</small></span><input id="auto-gain" type="checkbox" checked><i></i></label>
         <h2>Privacidade e sons</h2>
-        <label class="switch-row"><span><strong>Proteger meu IP na chamada</strong><small>Usa somente o servidor de retransmissão; recomendado.</small></span><input id="protect-ip" type="checkbox" checked><i></i></label>
+        <label class="switch-row"><span><strong>Proteção rígida de IP</strong><small>Força retransmissão. Ative só com um TURN próprio; o gratuito pode bloquear áudio e tela.</small></span><input id="protect-ip" type="checkbox"><i></i></label>
         <label class="switch-row"><span><strong>Sons da chamada</strong><small>Entrada, saída, tela, microfone e fone.</small></span><input id="call-sounds" type="checkbox" checked><i></i></label>
         <label class="range-field">Volume dos sons <output id="sound-volume-value">45%</output><input id="sound-volume" type="range" min="0" max="100" value="45"></label>
       </div>
@@ -192,6 +193,7 @@
         <label class="switch-row"><span><strong>Mostrar vídeos dos participantes</strong><small>Ocultar vídeo não corta o áudio.</small></span><input id="setting-participant-video" type="checkbox" checked><i></i></label>
         <label class="switch-row"><span><strong>Mostrar minha câmera</strong><small>Exibe ou esconde seu quadro local.</small></span><input id="setting-self-view" type="checkbox" checked><i></i></label>
         <label class="switch-row"><span><strong>Preview da minha tela</strong><small>Mostra localmente aquilo que você está compartilhando.</small></span><input id="setting-screen-preview" type="checkbox" checked><i></i></label>
+        <label class="switch-row"><span><strong>Anotações por cima da minha tela</strong><small id="desktop-overlay-status">No aplicativo, mostra as marcações sobre a tela real sem bloquear seus cliques.</small></span><input id="desktop-overlay" type="checkbox" checked><i></i></label>
         <label class="switch-row"><span><strong>Permitir desenhos</strong><small>Participantes podem desenhar por cima da sua tela.</small></span><input id="setting-annotations" type="checkbox" checked><i></i></label>
         <label class="switch-row"><span><strong>Priorizar tela compartilhada</strong><small>Muda automaticamente para o modo foco.</small></span><input id="setting-auto-focus" type="checkbox" checked><i></i></label>
         <label>Câmera<select id="camera-device"><option value="default">Padrão do sistema</option></select></label>
