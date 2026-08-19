@@ -50,7 +50,7 @@ const DEFAULTS = {
 
 function loadSettings() {
   try {
-    const raw = JSON.parse(localStorage.getItem('concord-settings') || '{}');
+    const raw = JSON.parse(localStorage.getItem('alpendre-settings') || localStorage.getItem('concord-settings') || '{}');
     const settings = { ...DEFAULTS, ...raw };
     if (raw.shareQuality) settings.screenQuality = String(raw.shareQuality);
     if (raw.autoFocusShares !== undefined) settings.autoFocus = Boolean(raw.autoFocusShares);
@@ -65,17 +65,21 @@ function loadSettings() {
   } catch { return { ...DEFAULTS }; }
 }
 
-const clientId = sessionStorage.getItem('concord-client-id') || sessionStorage.getItem('lume-client-id') || crypto.randomUUID();
-sessionStorage.setItem('concord-client-id', clientId);
-const deviceId = localStorage.getItem('concord-device-id') || crypto.randomUUID();
-localStorage.setItem('concord-device-id', deviceId);
-const tabId = sessionStorage.getItem('concord-tab-id') || crypto.randomUUID();
-sessionStorage.setItem('concord-tab-id', tabId);
+const clientId = sessionStorage.getItem('alpendre-client-id') || sessionStorage.getItem('concord-client-id') || sessionStorage.getItem('lume-client-id') || crypto.randomUUID();
+sessionStorage.setItem('alpendre-client-id', clientId);
+const deviceId = localStorage.getItem('alpendre-device-id') || localStorage.getItem('concord-device-id') || crypto.randomUUID();
+localStorage.setItem('alpendre-device-id', deviceId);
+const tabId = sessionStorage.getItem('alpendre-tab-id') || sessionStorage.getItem('concord-tab-id') || crypto.randomUUID();
+sessionStorage.setItem('alpendre-tab-id', tabId);
+const requestedSpace = new URLSearchParams(location.search).get('space');
+const initialSpaceId = String(requestedSpace || localStorage.getItem('alpendre-space') || 'alpendre').toLowerCase().replace(/[^a-z0-9_-]/g, '').slice(0, 64) || 'alpendre';
 
 const state = {
   clientId, deviceId, tabId, sessionToken: '', tabActive: false, tabHeartbeat: null, tabStandbyTimer: null,
-  name: localStorage.getItem('concord-name') || localStorage.getItem('lume-name') || 'Visitante',
-  avatar: localStorage.getItem('concord-avatar') || '',
+  name: localStorage.getItem('alpendre-name') || localStorage.getItem('concord-name') || localStorage.getItem('lume-name') || 'Visitante',
+  avatar: localStorage.getItem('alpendre-avatar') || localStorage.getItem('concord-avatar') || '',
+  spaceId: initialSpaceId, space: { id: initialSpaceId, name: initialSpaceId === 'alpendre' ? 'Alpendre' : 'Espaço', visibility: initialSpaceId.startsWith('priv-') ? 'private' : 'public' }, spaces: [],
+  savedSpaces: (() => { try { return JSON.parse(localStorage.getItem('alpendre-saved-spaces') || '[]'); } catch { return []; } })(),
   textRoom: 'geral', voiceRoom: null, eventSource: null,
   textUsers: [], voiceChannels: { lobby: [], jogos: [], musica: [] }, callUsers: [],
   settings: loadSettings(), peers: new Map(), peerRebuilds: new Map(), iceServers: [], stunServers: [], relayServers: [], iceRelayReady: false, iceRelayReliable: false, relayProvider: '',
@@ -89,18 +93,18 @@ const state = {
   knownCallUsers: new Map(), callRosterReady: false,
   pendingFiles: [], recorder: null, recordingStream: null, recordingStartedAt: 0, recordingTimer: null,
   desktopOverlayAvailable: false, mediaWarningAt: 0, unreadMessages: 0,
-  callProvider: null, conference: null, jitsiApi: null, jitsiReady: false, jitsiTimer: null,
-  jitsiVideoEnabled: false, jitsiScreenSharing: false, jitsiLeaving: false, jitsiLocalParticipantId: '',
+  callProvider: 'direct', conference: null,
 };
 
 const IDS = [
   'room-title','chat-area','messages','new-messages','message-form','message-input','attachment-tray','attach-button','file-input','record-audio','recording-time','member-count','member-list','toggle-member-list',
-  'call-stage','call-title','call-status','video-grid','reconnect-media','jitsi-open-external','jitsi-call','jitsi-container','jitsi-loading','layout-button','view-menu','layout-grid','layout-focus','participant-video-button','self-view-button','screen-preview-button','fullscreen-button',
+  'space-list','open-spaces','space-name','space-visibility','spaces-overlay','close-spaces','public-spaces','new-space-name','new-space-private','create-space','space-invite-code','join-private-space',
+  'call-stage','call-title','call-status','video-grid','reconnect-media','layout-button','view-menu','layout-grid','layout-focus','participant-video-button','self-view-button','screen-preview-button','fullscreen-button',
   'annotation-toolbar','annotation-target','close-annotation','draw-size','undo-drawing','clear-drawings','annotation-permission-row','allow-annotations','annotation-help','call-mic','call-deafen','call-camera','call-screen','call-draw','leave-call',
   'connection-panel','connected-room','disconnect-voice','profile-button','profile-avatar','profile-fallback','self-name','self-status','bar-mic','bar-deafen','open-settings',
   'settings-overlay','close-settings','settings-avatar','settings-avatar-fallback','settings-name-display','display-name','avatar-input','remove-avatar','save-profile','profile-feedback',
   'input-device','output-device','master-volume','master-volume-value','mic-sensitivity','sensitivity-value','loopback-button','settings-meter','sensitivity-threshold','mic-level-value','mic-loopback-audio',
-  'noise-suppression','noise-status','echo-cancellation','echo-status','auto-gain','gain-status','protect-ip','call-sounds','sound-volume','sound-volume-value','desktop-overlay','desktop-overlay-status',
+  'noise-suppression','noise-status','echo-cancellation','echo-status','auto-gain','gain-status','protect-ip','relay-status','call-sounds','sound-volume','sound-volume-value','desktop-overlay','desktop-overlay-status',
   'setting-participant-video','setting-self-view','setting-screen-preview','setting-annotations','setting-auto-focus','camera-device','camera-quality','screen-quality','accent-color','compact-mode',
   'context-menu','toast-stack',
 ];
@@ -141,7 +145,7 @@ async function api(path, body = {}) {
 }
 
 function saveSettings() {
-  localStorage.setItem('concord-settings', JSON.stringify(state.settings));
+  localStorage.setItem('alpendre-settings', JSON.stringify(state.settings));
   applyAppearance();
 }
 
@@ -167,13 +171,93 @@ function updateSelfUI() {
   el.selfStatus.textContent = state.voiceRoom ? `Em ${CHANNELS[state.voiceRoom]}` : 'Disponível';
 }
 
+function spaceInitials(name) {
+  return String(name || 'A').trim().split(/\s+/).slice(0, 2).map((part) => part[0] || '').join('').toUpperCase();
+}
+
+function rememberSpace(space) {
+  if (!space?.id) return;
+  state.savedSpaces = [space, ...state.savedSpaces.filter((item) => item.id !== space.id)].slice(0, 20);
+  localStorage.setItem('alpendre-saved-spaces', JSON.stringify(state.savedSpaces));
+}
+
+function renderSpaces() {
+  rememberSpace(state.space);
+  el.spaceName.textContent = String(state.space?.name || 'Alpendre').toUpperCase();
+  el.spaceVisibility.textContent = state.space?.visibility === 'private' ? 'espaço privado' : 'espaço público';
+  el.spaceList.replaceChildren();
+  for (const space of state.savedSpaces) {
+    const button = document.createElement('button');
+    button.className = `rail-room${space.id === state.spaceId ? ' active' : ''}`;
+    button.textContent = spaceInitials(space.name); button.title = space.name; button.setAttribute('aria-label', space.name);
+    button.addEventListener('click', () => switchSpace(space.id));
+    el.spaceList.append(button);
+  }
+  el.publicSpaces.replaceChildren();
+  for (const space of state.spaces) {
+    const button = document.createElement('button'); button.className = `public-space${space.id === state.spaceId ? ' active' : ''}`;
+    const mark = document.createElement('span'); mark.className = 'public-space-mark'; mark.textContent = spaceInitials(space.name);
+    const copy = document.createElement('span'); copy.className = 'public-space-copy';
+    const title = document.createElement('strong'); title.textContent = space.name;
+    const detail = document.createElement('small'); detail.textContent = `${space.online || 0} online · público`;
+    copy.append(title, detail); button.append(mark, copy); button.addEventListener('click', () => switchSpace(space.id)); el.publicSpaces.append(button);
+  }
+  if (!state.spaces.length) {
+    const empty = document.createElement('p'); empty.textContent = 'Nenhum espaço público disponível agora.'; el.publicSpaces.append(empty);
+  }
+}
+
+async function loadSpaces() {
+  try {
+    const response = await fetch('/api/spaces'); const result = await response.json();
+    if (response.ok) state.spaces = result.spaces || [];
+  } catch { state.spaces = []; }
+  renderSpaces();
+}
+
+async function resolveSpace(spaceId) {
+  const response = await fetch(`/api/space?id=${encodeURIComponent(spaceId)}`);
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(result.error || 'Espaço não encontrado.');
+  return result.space;
+}
+
+async function switchSpace(spaceId) {
+  const clean = String(spaceId || '').toLowerCase().replace(/[^a-z0-9_-]/g, '').slice(0, 64);
+  if (!clean) return;
+  try {
+    const space = await resolveSpace(clean);
+    if (state.voiceRoom) await leaveCall();
+    state.spaceId = space.id; state.space = space; state.textRoom = 'geral'; state.textUsers = [];
+    state.voiceChannels = { lobby: [], jogos: [], musica: [] }; state.callUsers = [];
+    localStorage.setItem('alpendre-space', space.id); rememberSpace(space);
+    const url = new URL(location.href); url.searchParams.set('space', space.id); history.replaceState({}, '', url);
+    el.spacesOverlay.classList.add('hidden'); renderSpaces(); switchTextRoom('geral');
+    if (state.tabActive) connectEvents();
+  } catch (error) { toast(error.message, 'error'); }
+}
+
+async function createSpace() {
+  const name = el.newSpaceName.value.trim();
+  if (!name) { toast('Dê um nome ao espaço.', 'error'); return; }
+  try {
+    const response = await fetch('/api/spaces', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, visibility: el.newSpacePrivate.checked ? 'private' : 'public' }) });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.error || 'Não foi possível criar o espaço.');
+    el.newSpaceName.value = ''; await loadSpaces(); await switchSpace(result.space.id);
+    if (result.space.visibility === 'private') {
+      navigator.clipboard?.writeText(result.space.id).catch(() => {});
+      toast(`Espaço privado criado. Código copiado: ${result.space.id}`);
+    }
+  } catch (error) { toast(error.message, 'error'); }
+}
+
 function mediaState() {
-  const hosted = state.callProvider === 'jitsi';
   return {
-    micEnabled: state.micEnabled && (hosted || Boolean(state.audioStream?.getAudioTracks()[0])),
-    cameraEnabled: hosted ? state.jitsiVideoEnabled : Boolean(state.cameraStream?.getVideoTracks()[0]),
-    screenSharing: hosted ? state.jitsiScreenSharing : Boolean(state.screenStream?.getVideoTracks()[0]),
-    annotationsEnabled: hosted ? false : Boolean(state.annotationsEnabled && state.screenStream),
+    micEnabled: state.micEnabled && Boolean(state.audioStream?.getAudioTracks()[0]),
+    cameraEnabled: Boolean(state.cameraStream?.getVideoTracks()[0]),
+    screenSharing: Boolean(state.screenStream?.getVideoTracks()[0]),
+    annotationsEnabled: Boolean(state.annotationsEnabled && state.screenStream),
     deafened: state.deafened,
   };
 }
@@ -184,7 +268,7 @@ async function postMediaState() {
   catch (error) { console.warn(error); }
 }
 
-const ACTIVE_TAB_KEY = 'concord-active-tab';
+const ACTIVE_TAB_KEY = 'alpendre-active-tab';
 const DEV_MULTITAB = ['localhost', '127.0.0.1', '::1'].includes(location.hostname) && new URLSearchParams(location.search).has('multi');
 
 function readActiveTab() {
@@ -200,10 +284,10 @@ function tabStandbyOverlay() {
   if (overlay) return overlay;
   overlay = document.createElement('div'); overlay.id = 'tab-standby-overlay'; overlay.className = 'tab-standby-overlay hidden';
   const card = document.createElement('section'); card.className = 'tab-standby-card';
-  const logo = document.createElement('div'); logo.className = 'tab-standby-logo'; logo.textContent = 'C';
-  const title = document.createElement('h2'); title.textContent = 'O Concord já está aberto em outra guia';
+  const logo = document.createElement('div'); logo.className = 'tab-standby-logo'; logo.textContent = 'A';
+  const title = document.createElement('h2'); title.textContent = 'O Alpendre já está aberto em outra guia';
   const copy = document.createElement('p'); copy.textContent = 'Só uma guia por navegador fica conectada à chamada. Isso evita visitantes duplicados, eco e câmera presa.';
-  const button = document.createElement('button'); button.className = 'primary-button'; button.textContent = 'Usar o Concord nesta guia';
+  const button = document.createElement('button'); button.className = 'primary-button'; button.textContent = 'Usar o Alpendre nesta guia';
   button.addEventListener('click', () => activateTab(true));
   card.append(logo, title, copy, button); overlay.append(card); document.body.append(overlay); return overlay;
 }
@@ -211,7 +295,7 @@ function tabStandbyOverlay() {
 function stopLocalSessionForStandby() {
   state.eventSource?.close(); state.eventSource = null; state.sessionToken = '';
   state.voiceRoom = null; state.callUsers = [];
-  unmountJitsi(); closeAllPeers(); stopLoopback(); stopCamera(); stopScreen(false);
+  closeAllPeers(); stopLoopback(); stopCamera(); stopScreen(false);
   state.audioStream?.getTracks().forEach((track) => track.stop()); state.audioStream = null;
   state.audioMonitors.clear(); state.speaking.clear();
   renderCall(); renderVoiceChannels(); updateControlStates();
@@ -246,7 +330,7 @@ function connectEvents() {
   if (!state.tabActive) return;
   state.eventSource?.close();
   const queryDeviceId = DEV_MULTITAB ? `${state.deviceId}-${state.tabId}` : state.deviceId;
-  const query = new URLSearchParams({ room: state.textRoom, clientId: state.clientId, deviceId: queryDeviceId, name: state.name });
+  const query = new URLSearchParams({ space: state.spaceId, room: state.textRoom, clientId: state.clientId, deviceId: queryDeviceId, name: state.name });
   const source = new EventSource(`/api/events?${query}`);
   state.eventSource = source;
   document.querySelector('.status-dot').style.background = '#ffd166';
@@ -256,13 +340,15 @@ function connectEvents() {
   };
   source.onerror = () => {
     document.querySelector('.status-dot').style.background = 'var(--red)';
-    el.callStatus.textContent = state.voiceRoom ? 'Reconectando ao Concord…' : '';
+    el.callStatus.textContent = state.voiceRoom ? 'Reconectando ao Alpendre…' : '';
   };
   source.onmessage = async (event) => {
     let payload;
     try { payload = JSON.parse(event.data); } catch { return; }
     if (payload.type === 'hello') {
       state.sessionToken = String(payload.sessionToken || '');
+      state.space = payload.space || state.space;
+      renderSpaces();
       api('/api/profile', { name: state.name, avatar: state.avatar }).catch(() => {});
       renderMessages(payload.messages || []);
       state.textUsers = payload.users || [];
@@ -274,7 +360,6 @@ function connectEvents() {
         api('/api/call', { action: 'join', voiceRoom: state.voiceRoom, media: mediaState() })
           .then((result) => {
             state.conference = result.conference || state.conference;
-            if (state.conference?.provider === 'jitsi') mountJitsi(state.conference);
             syncCallUsers(result.users || []);
           })
           .catch((error) => toast(error.message, 'error'));
@@ -294,9 +379,9 @@ function connectEvents() {
       removeMessageFromView(payload.messageId);
     } else if (payload.type === 'tab-replaced') {
       enterTabStandby();
-    } else if (payload.type === 'signal' && state.callProvider !== 'jitsi') {
+    } else if (payload.type === 'signal') {
       await handleSignal(payload.from, payload.data);
-    } else if (payload.type === 'peer-left' && state.callProvider !== 'jitsi') {
+    } else if (payload.type === 'peer-left') {
       removePeer(payload.id);
     } else if (payload.type === 'annotation') {
       handleAnnotation(payload);
@@ -304,7 +389,7 @@ function connectEvents() {
       state.annotations.set(payload.shareOwnerId, Array.isArray(payload.items) ? payload.items : []);
       document.querySelectorAll(`canvas[data-share-owner="${CSS.escape(payload.shareOwnerId)}"]`).forEach((canvas) => redrawCanvas(canvas, payload.shareOwnerId));
     } else if (payload.type === 'server-restarting') {
-      toast('O Concord está atualizando. A chamada volta sozinha em instantes.');
+      toast('O Alpendre está atualizando. A chamada volta sozinha em instantes.');
     }
   };
 }
@@ -487,7 +572,7 @@ async function uploadPendingFile(pending) {
   pending.uploading = true; renderPendingFiles();
   const query = new URLSearchParams({ clientId: state.clientId });
   const response = await fetch(`/api/upload?${query}`, {
-    method: 'POST', headers: { 'Content-Type': pending.file.type || 'application/octet-stream', 'X-File-Name': encodeURIComponent(pending.file.name), 'X-Concord-Session': state.sessionToken }, body: pending.file,
+    method: 'POST', headers: { 'Content-Type': pending.file.type || 'application/octet-stream', 'X-File-Name': encodeURIComponent(pending.file.name), 'X-Alpendre-Session': state.sessionToken }, body: pending.file,
   });
   const result = await response.json().catch(() => ({})); pending.uploading = false;
   if (!response.ok) throw new Error(result.error || `Falha ao enviar ${pending.file.name}.`);
@@ -599,11 +684,17 @@ async function loadIceServers() {
     state.iceRelayReady = data.relayReady === true;
     state.iceRelayReliable = data.relayReliable === true;
     state.relayProvider = String(data.relayProvider || '');
+    state.settings.protectIp = state.iceRelayReliable && state.relayServers.length > 0;
   } catch {
     state.iceServers = [{ urls: 'stun:stun.l.google.com:19302' }];
     state.stunServers = [...state.iceServers]; state.relayServers = [];
     state.iceRelayReady = false; state.iceRelayReliable = false; state.relayProvider = '';
+    state.settings.protectIp = false;
   }
+  localStorage.setItem('alpendre-settings', JSON.stringify(state.settings));
+  if (el.relayStatus) el.relayStatus.textContent = state.settings.protectIp
+    ? 'A rota TURN segura está ativa e o IP fica oculto dos outros participantes.'
+    : 'A rota direta está ativa; o TURN seguro ainda precisa ser configurado no servidor.';
 }
 
 function getAudioContext() {
@@ -702,199 +793,25 @@ function addLocalTracks(peer) {
   }
 }
 
-function setJitsiLoading(title, detail, failed = false) {
-  const titleNode = el.jitsiLoading.querySelector('strong');
-  const detailNode = el.jitsiLoading.querySelector('small');
-  if (titleNode) titleNode.textContent = title;
-  if (detailNode) detailNode.textContent = detail;
-  el.jitsiCall.classList.toggle('failed', failed);
-  el.jitsiCall.classList.remove('ready', 'frame-loaded');
-}
-
-function jitsiMeetingUrl(conference = state.conference) {
-  if (!conference?.domain || !conference?.roomName) return '';
-  return `https://${conference.domain}/${encodeURIComponent(conference.roomName)}`;
-}
-
-function loadJitsiApi(domain) {
-  if (window.JitsiMeetExternalAPI) return Promise.resolve(window.JitsiMeetExternalAPI);
-  if (window.__concordJitsiPromise) return window.__concordJitsiPromise;
-  window.__concordJitsiPromise = new Promise((resolve, reject) => {
-    const script = document.createElement('script');
-    const timeout = setTimeout(() => reject(new Error('Tempo esgotado ao carregar a chamada.')), 20_000);
-    script.src = `https://${domain}/external_api.js`;
-    script.async = true;
-    script.dataset.concordJitsi = domain;
-    script.onload = () => {
-      clearTimeout(timeout);
-      if (window.JitsiMeetExternalAPI) resolve(window.JitsiMeetExternalAPI);
-      else reject(new Error('O serviço de chamada não ficou disponível.'));
-    };
-    script.onerror = () => { clearTimeout(timeout); reject(new Error('Não foi possível carregar o serviço de chamada.')); };
-    document.head.append(script);
-  }).catch((error) => {
-    window.__concordJitsiPromise = null;
-    throw error;
-  });
-  return window.__concordJitsiPromise;
-}
-
-async function applyJitsiDeafen() {
-  if (!state.jitsiApi || !state.jitsiReady) return;
-  try {
-    const participants = await state.jitsiApi.getParticipantsInfo();
-    const volume = state.deafened ? 0 : Math.min(1, state.settings.masterVolume / 100);
-    for (const participant of participants || []) {
-      const id = participant.participantId || participant.id;
-      if (id && id !== state.jitsiLocalParticipantId) state.jitsiApi.executeCommand('setParticipantVolume', id, volume);
-    }
-  } catch { /* o menu interno da chamada continua disponível */ }
-}
-
-function unmountJitsi(hangup = false) {
-  clearTimeout(state.jitsiTimer); state.jitsiTimer = null;
-  const apiInstance = state.jitsiApi;
-  state.jitsiApi = null; state.jitsiReady = false; state.jitsiLocalParticipantId = '';
-  state.jitsiVideoEnabled = false; state.jitsiScreenSharing = false;
-  if (apiInstance) {
-    state.jitsiLeaving = true;
-    try { if (hangup) apiInstance.executeCommand('hangup'); } catch { /* já saiu */ }
-    try { apiInstance.dispose(); } catch { /* já desmontado */ }
-    setTimeout(() => { state.jitsiLeaving = false; }, 600);
-  }
-  el.jitsiContainer.replaceChildren();
-  el.jitsiCall.classList.remove('ready', 'failed', 'frame-loaded');
-}
-
-async function mountJitsi(conference) {
-  if (!conference?.domain || !conference?.roomName || !state.voiceRoom) return;
-  const roomAtStart = state.voiceRoom;
-  unmountJitsi(false);
-  state.callProvider = 'jitsi'; state.conference = conference;
-  el.callStage.classList.add('jitsi-active');
-  el.jitsiCall.classList.remove('hidden'); el.jitsiOpenExternal.classList.remove('hidden');
-  setJitsiLoading('Preparando chamada estável…', 'Áudio, câmera e tela serão abertos com segurança dentro do Concord.');
-  el.callStatus.textContent = `${Math.max(1, state.callUsers.length)} na chamada · preparando mídia…`;
-  try {
-    const JitsiMeetExternalAPI = await loadJitsiApi(conference.domain);
-    if (state.voiceRoom !== roomAtStart || state.conference?.roomName !== conference.roomName) return;
-    const apiInstance = new JitsiMeetExternalAPI(conference.domain, {
-      roomName: conference.roomName,
-      parentNode: el.jitsiContainer,
-      width: '100%',
-      height: '100%',
-      lang: 'ptBR',
-      userInfo: { displayName: state.name },
-      onload: () => {
-        if (state.voiceRoom !== roomAtStart) return;
-        el.jitsiCall.classList.add('frame-loaded');
-        el.callStatus.textContent = `${Math.max(1, state.callUsers.length)} na chamada · inicie a sala se necessário`;
-      },
-      configOverwrite: {
-        prejoinPageEnabled: false,
-        prejoinConfig: { enabled: false },
-        disableDeepLinking: true,
-        enableWelcomePage: false,
-        startWithAudioMuted: !state.micEnabled,
-        startWithVideoMuted: true,
-        enableNoAudioDetection: true,
-        enableNoisyMicDetection: true,
-        disableInviteFunctions: true,
-        p2p: { enabled: false },
-        toolbarButtons: [
-          'microphone', 'camera', 'desktop', 'hangup', 'fullscreen', 'tileview',
-          'settings', 'videoquality', 'select-background', 'participants-pane', 'raisehand',
-        ],
-      },
-      interfaceConfigOverwrite: {
-        APP_NAME: 'Concord',
-        NATIVE_APP_NAME: 'Concord',
-        PROVIDER_NAME: 'Concord',
-        MOBILE_APP_PROMO: false,
-        DISABLE_JOIN_LEAVE_NOTIFICATIONS: true,
-        TILE_VIEW_MAX_COLUMNS: 5,
-      },
-    });
-    state.jitsiApi = apiInstance;
-    const iframe = apiInstance.getIFrame?.();
-    if (iframe) {
-      iframe.title = `Chamada ${CHANNELS[state.voiceRoom]}`;
-      iframe.allow = 'camera; microphone; display-capture; autoplay; clipboard-write; fullscreen';
-    }
-    apiInstance.addListener('videoConferenceJoined', (event) => {
-      if (state.jitsiApi !== apiInstance) return;
-      clearTimeout(state.jitsiTimer); state.jitsiTimer = null;
-      state.jitsiReady = true; state.jitsiLocalParticipantId = event.id || '';
-      el.jitsiCall.classList.add('ready'); el.jitsiCall.classList.remove('failed');
-      el.callStatus.textContent = `${Math.max(1, state.callUsers.length)} na chamada · mídia conectada`;
-      apiInstance.executeCommand('setNoiseSuppressionEnabled', { enabled: state.settings.noiseSuppression });
-      applyJitsiDeafen(); updateControlStates(); postMediaState();
-    });
-    apiInstance.addListener('audioMuteStatusChanged', ({ muted }) => {
-      const next = !muted;
-      if (state.micEnabled !== next) playCue(next ? 'unmute' : 'mute');
-      state.micEnabled = next; updateControlStates(); postMediaState();
-    });
-    apiInstance.addListener('videoMuteStatusChanged', ({ muted }) => {
-      state.jitsiVideoEnabled = !muted; updateControlStates(); postMediaState();
-    });
-    apiInstance.addListener('screenSharingStatusChanged', ({ on }) => {
-      state.jitsiScreenSharing = Boolean(on);
-      if (on) playCue('screen');
-      updateControlStates(); postMediaState();
-    });
-    apiInstance.addListener('participantJoined', ({ id }) => {
-      if (state.deafened && id) apiInstance.executeCommand('setParticipantVolume', id, 0);
-    });
-    apiInstance.addListener('browserSupport', ({ supported }) => {
-      if (!supported) toast('Este navegador não suporta a chamada estável. Use a opção Nova janela.', 'error');
-    });
-    apiInstance.addListener('micError', () => toast('O microfone foi bloqueado. Libere a permissão dentro da chamada.', 'error'));
-    apiInstance.addListener('cameraError', () => toast('A câmera foi bloqueada. Confira a permissão do navegador.', 'error'));
-    apiInstance.addListener('readyToClose', () => {
-      if (!state.jitsiLeaving && state.voiceRoom) leaveCall(true);
-    });
-    state.jitsiTimer = setTimeout(() => {
-      if (state.jitsiApi !== apiInstance || state.jitsiReady || el.jitsiCall.classList.contains('frame-loaded')) return;
-      setJitsiLoading('A chamada demorou para abrir', 'Clique em Reabrir ou use Nova janela. O chat e os canais continuam funcionando.', true);
-      el.callStatus.textContent = `${Math.max(1, state.callUsers.length)} na chamada · mídia ainda não abriu`;
-    }, 25_000);
-  } catch (error) {
-    setJitsiLoading('Não foi possível abrir a chamada aqui', 'Use Nova janela para entrar diretamente ou clique em Reabrir.', true);
-    el.callStatus.textContent = `${Math.max(1, state.callUsers.length)} na chamada · chamada indisponível`;
-    toast(error.message || 'Não foi possível abrir a chamada estável.', 'error');
-  }
-}
-
-function openJitsiInNewWindow() {
-  const url = jitsiMeetingUrl();
-  if (!url) return;
-  const opened = window.open(url, '_blank', 'noopener,noreferrer');
-  if (!opened) toast('O navegador bloqueou a nova janela. Permita pop-ups para o Concord.', 'error');
-}
-
 async function joinCall(roomId) {
   if (state.voiceRoom === roomId) return;
   getAudioContext();
-  if (state.voiceRoom) { unmountJitsi(true); closeAllPeers(); }
+  if (state.voiceRoom) closeAllPeers();
   try {
     const result = await api('/api/call', { action: 'join', voiceRoom: roomId, media: mediaState() });
     state.voiceRoom = roomId;
     state.conference = result.conference || null;
-    state.callProvider = state.conference?.provider === 'jitsi' ? 'jitsi' : 'direct';
+    state.callProvider = 'direct';
     state.callUsers = result.users || [];
     state.annotations.clear(); state.pinnedUserId = null; state.autoFocusedShareId = null;
     (result.annotations || []).forEach((snapshot) => state.annotations.set(snapshot.shareOwnerId, snapshot.items || []));
     state.knownCallUsers.clear(); state.callRosterReady = false;
     renderCall(); renderVoiceChannels(); updateControlStates();
     syncCallUsers(state.callUsers);
-    if (state.callProvider === 'jitsi') mountJitsi(state.conference);
-    else {
-      try { await ensureMicrophone(); }
-      catch (error) {
-        state.micEnabled = false;
-        toast(error.name === 'NotAllowedError' ? 'Permita o microfone no navegador para falar.' : 'Não consegui abrir seu microfone.', 'error');
-      }
+    try { await ensureMicrophone(); }
+    catch (error) {
+      state.micEnabled = false;
+      toast(error.name === 'NotAllowedError' ? 'Permita o microfone no navegador para falar.' : 'Não consegui abrir seu microfone.', 'error');
     }
     playCue('join');
     toast(`Você entrou em ${CHANNELS[roomId]}.`);
@@ -905,7 +822,6 @@ async function leaveCall(fromProvider = false) {
   if (!state.voiceRoom) return;
   const oldRoom = state.voiceRoom;
   playCue('leave');
-  unmountJitsi(!fromProvider);
   try { await api('/api/call', { action: 'leave' }); } catch { /* limpar localmente mesmo assim */ }
   state.voiceRoom = null; state.callUsers = []; state.pinnedUserId = null; state.autoFocusedShareId = null;
   state.callProvider = null; state.conference = null;
@@ -931,8 +847,7 @@ function syncCallUsers(users) {
   state.knownCallUsers = nextUsers; state.callRosterReady = true;
   state.callUsers = users;
   const validIds = new Set(users.map((user) => user.id));
-  if (state.callProvider === 'jitsi') closeAllPeers();
-  else for (const user of users) if (user.id !== state.clientId) createPeer(user.id);
+  for (const user of users) if (user.id !== state.clientId) createPeer(user.id);
   for (const id of state.peers.keys()) if (!validIds.has(id)) removePeer(id);
   renderCall(); renderMembers(); renderVoiceChannels();
 }
@@ -940,12 +855,6 @@ function syncCallUsers(users) {
 function updateCallConnectionStatus() {
   if (!state.voiceRoom) return;
   const total = Math.max(1, state.callUsers.length);
-  if (state.callProvider === 'jitsi') {
-    el.callStatus.textContent = state.jitsiReady
-      ? `${total} na chamada · mídia conectada`
-      : el.jitsiCall.classList.contains('frame-loaded') ? `${total} na chamada · inicie a sala se necessário` : `${total} na chamada · preparando mídia…`;
-    return;
-  }
   const remoteCount = state.callUsers.filter((user) => user.id !== state.clientId).length;
   const connectedCount = [...state.peers.values()].filter((peer) => peer.pc.connectionState === 'connected').length;
   const failedCount = [...state.peers.values()].filter((peer) => peer.timedOut).length;
@@ -1180,16 +1089,16 @@ function setupRemoteAudio(peer, stream, track) {
 
 function userPreference(userId) {
   try {
-    const all = JSON.parse(localStorage.getItem('concord-user-audio') || '{}');
+    const all = JSON.parse(localStorage.getItem('alpendre-user-audio') || localStorage.getItem('concord-user-audio') || '{}');
     return { muted: false, volume: 100, hideVideo: false, ...(all[userId] || {}) };
   } catch { return { muted: false, volume: 100, hideVideo: false }; }
 }
 
 function setUserPreference(userId, update) {
   let all = {};
-  try { all = JSON.parse(localStorage.getItem('concord-user-audio') || '{}'); } catch { /* vazio */ }
+  try { all = JSON.parse(localStorage.getItem('alpendre-user-audio') || localStorage.getItem('concord-user-audio') || '{}'); } catch { /* vazio */ }
   all[userId] = { muted: false, volume: 100, hideVideo: false, ...(all[userId] || {}), ...update };
-  localStorage.setItem('concord-user-audio', JSON.stringify(all));
+  localStorage.setItem('alpendre-user-audio', JSON.stringify(all));
   applyRemoteAudio(userId); renderVideoGrid();
 }
 
@@ -1223,10 +1132,6 @@ function closeAllPeers() {
 
 async function rebuildPeerConnections() {
   if (!state.voiceRoom) return;
-  if (state.callProvider === 'jitsi') {
-    mountJitsi(state.conference);
-    return;
-  }
   await loadIceServers();
   const peers = state.callUsers.filter((user) => user.id !== state.clientId).map((user) => user.id);
   closeAllPeers(); peers.forEach(createPeer);
@@ -1234,11 +1139,6 @@ async function rebuildPeerConnections() {
 }
 
 async function toggleMicrophone() {
-  if (state.callProvider === 'jitsi') {
-    if (!state.jitsiApi) { toast('A chamada ainda está abrindo.'); return; }
-    state.jitsiApi.executeCommand('toggleAudio');
-    return;
-  }
   if (!state.audioStream) {
     try { await ensureMicrophone(); state.micEnabled = true; }
     catch { toast('Não consegui acessar o microfone. Confira a permissão.', 'error'); return; }
@@ -1251,17 +1151,11 @@ async function toggleMicrophone() {
 async function toggleDeafen() {
   state.deafened = !state.deafened;
   playCue(state.deafened ? 'deafen' : 'undeafen');
-  if (state.callProvider === 'jitsi') await applyJitsiDeafen();
-  else applyRemoteAudio();
+  applyRemoteAudio();
   updateControlStates(); postMediaState();
 }
 
 async function toggleCamera() {
-  if (state.callProvider === 'jitsi') {
-    if (!state.jitsiApi) { toast('A chamada ainda está abrindo.'); return; }
-    state.jitsiApi.executeCommand('toggleVideo');
-    return;
-  }
   if (state.cameraStream) { stopCamera(); return; }
   if (!state.voiceRoom) { toast('Entre em um canal de voz primeiro.'); return; }
   const height = Number(state.settings.cameraQuality) || 720;
@@ -1289,11 +1183,6 @@ function stopCamera() {
 }
 
 async function toggleScreen() {
-  if (state.callProvider === 'jitsi') {
-    if (!state.jitsiApi) { toast('A chamada ainda está abrindo.'); return; }
-    state.jitsiApi.executeCommand('toggleShareScreen');
-    return;
-  }
   if (state.screenStream) { stopScreen(); return; }
   if (!state.voiceRoom) { toast('Entre em um canal de voz primeiro.'); return; }
   if (!navigator.mediaDevices?.getDisplayMedia) { toast('Compartilhamento de tela não é suportado aqui.', 'error'); return; }
@@ -1396,7 +1285,7 @@ function makeVideoTile({ key, user, stream, screen = false, local = false, hidde
     const waiting = document.createElement('div'); waiting.className = 'screen-wait'; waiting.innerHTML = `${iconSvg(failed ? 'refresh' : (screen ? 'screen' : 'refresh'))}<strong>${failed ? 'Não foi possível conectar' : 'Abrindo áudio e vídeo…'}</strong><small>${failed ? 'A tentativa terminou. Você pode tentar novamente.' : 'A conexão de mídia ainda não foi concluída.'}</small>`;
     const retry = document.createElement('button'); retry.className = 'toolbar-button'; retry.innerHTML = `${iconSvg('refresh')}<span>Reconectar</span>`; retry.addEventListener('click', (event) => { event.stopPropagation(); rebuildPeerConnections(); }); waiting.append(retry); fallback.append(waiting);
   } else if (screen && !stream) {
-    const waiting = document.createElement('div'); waiting.className = 'screen-wait'; waiting.innerHTML = `${iconSvg('screen')}<strong>Conectando à tela…</strong><small>O Concord está recuperando a transmissão.</small>`; fallback.append(waiting);
+    const waiting = document.createElement('div'); waiting.className = 'screen-wait'; waiting.innerHTML = `${iconSvg('screen')}<strong>Conectando à tela…</strong><small>O Alpendre está recuperando a transmissão.</small>`; fallback.append(waiting);
   } else if (screen && stream) {
     const waiting = document.createElement('div'); waiting.className = 'screen-wait'; waiting.innerHTML = `${iconSvg('screen')}<strong>Recebendo a tela…</strong><small>Aguardando os primeiros quadros.</small>`; fallback.append(waiting);
   } else fallback.append(avatarNode(user));
@@ -1642,10 +1531,6 @@ function updateAnnotationPanel() {
 }
 
 function toggleAnnotationPanel() {
-  if (state.callProvider === 'jitsi') {
-    toast('As anotações sobre a tela não estão disponíveis no modo de chamada estável.');
-    return;
-  }
   if (!currentSharedOwner()) { toast('Ainda não há uma tela compartilhada para anotar.'); return; }
   state.annotationPanelOpen = !state.annotationPanelOpen; updateAnnotationPanel(); renderVideoGrid(); updateControlStates();
 }
@@ -1677,15 +1562,11 @@ function setAnnotationPermission(enabled) {
 function renderCall() {
   const active = Boolean(state.voiceRoom);
   el.callStage.classList.toggle('hidden', !active); el.connectionPanel.classList.toggle('hidden', !active);
-  const hosted = active && state.callProvider === 'jitsi';
-  el.callStage.classList.toggle('jitsi-active', hosted);
-  el.jitsiCall.classList.toggle('hidden', !hosted);
-  el.jitsiOpenExternal.classList.toggle('hidden', !hosted);
   if (!active) return;
   el.callTitle.textContent = CHANNELS[state.voiceRoom]; el.connectedRoom.textContent = CHANNELS[state.voiceRoom];
   updateCallConnectionStatus();
   updateSelfUI();
-  if (!hosted) renderVideoGrid();
+  renderVideoGrid();
 }
 
 function startLocalMeter() {
@@ -1723,12 +1604,6 @@ function startVoiceMeterLoop() {
 }
 
 function updateProcessingStatus(track = state.audioStream?.getAudioTracks()[0]) {
-  if (state.callProvider === 'jitsi' && state.voiceRoom) {
-    el.noiseStatus.textContent = state.settings.noiseSuppression ? 'Ativo na chamada estável' : 'Desligado';
-    el.echoStatus.textContent = 'Gerenciado pela chamada estável';
-    el.gainStatus.textContent = 'Gerenciado pela chamada estável';
-    return;
-  }
   const supported = navigator.mediaDevices?.getSupportedConstraints?.() || {};
   const active = track?.getSettings?.() || {};
   const rows = [
@@ -1746,12 +1621,6 @@ function updateProcessingStatus(track = state.audioStream?.getAudioTracks()[0]) 
 }
 
 async function applyAudioProcessing() {
-  if (state.callProvider === 'jitsi' && state.jitsiApi) {
-    state.jitsiApi.executeCommand('setNoiseSuppressionEnabled', { enabled: state.settings.noiseSuppression });
-    updateProcessingStatus();
-    toast('A configuração foi enviada para a chamada estável.');
-    return;
-  }
   const track = state.audioStream?.getAudioTracks()[0];
   if (!track) { updateProcessingStatus(); return; }
   try {
@@ -1817,8 +1686,7 @@ function stopLoopback() {
 }
 
 function updateControlStates() {
-  const hosted = state.callProvider === 'jitsi';
-  const hasMic = state.micEnabled && (hosted || Boolean(state.audioStream?.getAudioTracks()[0]));
+  const hasMic = state.micEnabled && Boolean(state.audioStream?.getAudioTracks()[0]);
   [el.barMic, el.callMic].forEach((button) => {
     button.classList.toggle('off', !hasMic); button.innerHTML = iconSvg(hasMic ? 'mic' : 'mic-off');
     button.title = hasMic ? 'Desativar microfone' : 'Ativar microfone';
@@ -1827,8 +1695,8 @@ function updateControlStates() {
     button.classList.toggle('off', state.deafened); button.innerHTML = iconSvg(state.deafened ? 'volume-off' : 'headphones');
     button.title = state.deafened ? 'Ouvir novamente' : 'Silenciar fone';
   });
-  const cameraEnabled = hosted ? state.jitsiVideoEnabled : Boolean(state.cameraStream);
-  const screenEnabled = hosted ? state.jitsiScreenSharing : Boolean(state.screenStream);
+  const cameraEnabled = Boolean(state.cameraStream);
+  const screenEnabled = Boolean(state.screenStream);
   el.callCamera.classList.toggle('active', cameraEnabled);
   el.callCamera.innerHTML = iconSvg(cameraEnabled ? 'video' : 'video-off');
   el.callScreen.classList.toggle('active', screenEnabled);
@@ -1894,8 +1762,7 @@ async function saveProfile() {
   try {
     const result = await api('/api/profile', { name, avatar });
     state.name = result.user?.name || name; state.avatar = result.user?.avatar || avatar; state.pendingAvatar = null;
-    localStorage.setItem('concord-name', state.name); localStorage.setItem('concord-avatar', state.avatar);
-    state.jitsiApi?.executeCommand('displayName', state.name);
+    localStorage.setItem('alpendre-name', state.name); localStorage.setItem('alpendre-avatar', state.avatar);
     updateSelfUI(); renderPresence(); renderVideoGrid();
     el.profileFeedback.textContent = 'Perfil salvo.'; setTimeout(() => { el.profileFeedback.textContent = ''; }, 2200);
   } catch (error) { toast(error.message, 'error'); }
@@ -1906,14 +1773,6 @@ function showContextMenu(event, userId) {
   event.preventDefault(); const user = getUser(userId); const preference = userPreference(userId);
   el.contextMenu.replaceChildren();
   const head = document.createElement('div'); head.className = 'context-head'; head.textContent = user.name; el.contextMenu.append(head);
-  if (state.callProvider === 'jitsi') {
-    const manage = contextAction('Abrir controles da chamada', 'members', () => state.jitsiApi?.executeCommand('toggleParticipantsPane', true));
-    el.contextMenu.append(manage);
-    el.contextMenu.classList.remove('hidden');
-    const hostedX = Math.min(event.clientX, innerWidth - 245); const hostedY = Math.min(event.clientY, innerHeight - el.contextMenu.offsetHeight - 8);
-    el.contextMenu.style.left = `${Math.max(5, hostedX)}px`; el.contextMenu.style.top = `${Math.max(5, hostedY)}px`;
-    return;
-  }
   const mute = contextAction(preference.muted ? 'Desmutar para mim' : 'Silenciar para mim', preference.muted ? 'volume' : 'volume-off', () => setUserPreference(userId, { muted: !preference.muted }));
   const hide = contextAction(preference.hideVideo ? 'Mostrar vídeo' : 'Ocultar vídeo', preference.hideVideo ? 'eye' : 'video-off', () => setUserPreference(userId, { hideVideo: !preference.hideVideo }));
   const focus = contextAction(state.pinnedUserId === userId ? 'Voltar para grade' : 'Priorizar participante', 'fullscreen', () => focusUser(userId));
@@ -1938,6 +1797,11 @@ function hideContextMenu() { el.contextMenu.classList.add('hidden'); }
 
 document.querySelectorAll('[data-text-room]').forEach((button) => button.addEventListener('click', () => switchTextRoom(button.dataset.textRoom)));
 document.querySelectorAll('[data-voice-room]').forEach((button) => button.addEventListener('click', () => joinCall(button.dataset.voiceRoom)));
+el.openSpaces.addEventListener('click', () => { loadSpaces(); el.spacesOverlay.classList.remove('hidden'); });
+el.closeSpaces.addEventListener('click', () => el.spacesOverlay.classList.add('hidden'));
+el.spacesOverlay.addEventListener('click', (event) => { if (event.target === el.spacesOverlay) el.spacesOverlay.classList.add('hidden'); });
+el.createSpace.addEventListener('click', createSpace);
+el.joinPrivateSpace.addEventListener('click', () => switchSpace(el.spaceInviteCode.value));
 
 el.messageForm.addEventListener('submit', async (event) => { event.preventDefault(); await sendCurrentMessage(); });
 el.messages.addEventListener('scroll', () => {
@@ -1970,18 +1834,15 @@ el.messageInput.addEventListener('paste', (event) => {
 [el.barDeafen, el.callDeafen].forEach((button) => button.addEventListener('click', toggleDeafen));
 el.callCamera.addEventListener('click', toggleCamera); el.callScreen.addEventListener('click', toggleScreen); el.callDraw.addEventListener('click', toggleAnnotationPanel);
 el.reconnectMedia.addEventListener('click', rebuildPeerConnections);
-el.jitsiOpenExternal.addEventListener('click', openJitsiInNewWindow);
 el.leaveCall.addEventListener('click', () => leaveCall()); el.disconnectVoice.addEventListener('click', () => leaveCall());
 el.layoutButton.addEventListener('click', (event) => {
   event.stopPropagation(); el.viewMenu.classList.toggle('hidden');
 });
 el.layoutGrid.addEventListener('click', () => {
-  if (state.callProvider === 'jitsi' && state.jitsiApi) state.jitsiApi.executeCommand('setTileView', true);
   state.layout = 'grid'; state.pinnedUserId = null; state.autoFocusedShareId = null;
   applyLayoutState(); el.viewMenu.classList.add('hidden');
 });
 el.layoutFocus.addEventListener('click', () => {
-  if (state.callProvider === 'jitsi' && state.jitsiApi) state.jitsiApi.executeCommand('setTileView', false);
   state.layout = 'focus'; applyLayoutState(); el.viewMenu.classList.add('hidden');
 });
 el.fullscreenButton.addEventListener('click', async () => {
@@ -2030,8 +1891,7 @@ el.saveProfile.addEventListener('click', saveProfile);
 
 el.masterVolume.addEventListener('input', () => {
   state.settings.masterVolume = Number(el.masterVolume.value); el.masterVolumeValue.value = `${state.settings.masterVolume}%`;
-  saveSettings();
-  if (state.callProvider === 'jitsi') applyJitsiDeafen(); else applyRemoteAudio();
+  saveSettings(); applyRemoteAudio();
   el.micLoopbackAudio.volume = Math.min(1, state.settings.masterVolume / 100);
 });
 el.micSensitivity.addEventListener('input', () => {
@@ -2040,17 +1900,14 @@ el.micSensitivity.addEventListener('input', () => {
 });
 el.inputDevice.addEventListener('change', async () => {
   state.settings.microphoneId = el.inputDevice.value; saveSettings();
-  if (state.callProvider === 'jitsi') { toast('Troque o microfone pelas configurações dentro da chamada.'); return; }
   try { await ensureMicrophone(true); postMediaState(); } catch { toast('Não consegui trocar o microfone.', 'error'); }
 });
 el.outputDevice.addEventListener('change', () => {
   state.settings.speakerId = el.outputDevice.value; saveSettings();
-  if (state.callProvider === 'jitsi') toast('Troque a saída de áudio pelas configurações dentro da chamada.');
-  else setOutputDevice(state.settings.speakerId);
+  setOutputDevice(state.settings.speakerId);
 });
 el.cameraDevice.addEventListener('change', async () => {
   state.settings.cameraId = el.cameraDevice.value; saveSettings();
-  if (state.callProvider === 'jitsi') { toast('Troque a câmera pelas configurações dentro da chamada.'); return; }
   if (state.cameraStream) { stopCamera(); await toggleCamera(); }
 });
 el.loopbackButton.addEventListener('click', toggleLoopback);
@@ -2123,6 +1980,6 @@ window.addEventListener('beforeunload', () => {
   if (owner?.tabId === state.tabId) localStorage.removeItem(ACTIVE_TAB_KEY);
 });
 
-applyAppearance(); syncSettingsControls(); updateSelfUI(); updateControlStates(); updateProcessingStatus();
+applyAppearance(); syncSettingsControls(); updateSelfUI(); updateControlStates(); updateProcessingStatus(); renderSpaces(); loadSpaces();
 state.annotationsEnabled = state.settings.annotations;
 activateTab(false);

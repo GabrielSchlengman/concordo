@@ -1,33 +1,22 @@
-# Publicar o Concord gratuitamente
+# Publicar o Alpendre no Render
 
-Este projeto já está configurado para o plano gratuito do Render.
-
-## O que você precisa
-
-- Uma conta gratuita no GitHub.
-- Uma conta gratuita no Render.
-- O pacote `Concord-Cloud-Render.zip`.
+O projeto continua preparado para o plano gratuito do Render. O serviço atual ainda se chama `lume-app` para manter o endereço público funcionando.
 
 ## Publicação
 
-1. Extraia `Concord-Cloud-Render.zip`.
-2. Crie um repositório novo no GitHub chamado `concordo`.
-3. Envie todos os arquivos extraídos para a raiz desse repositório.
-4. No Render, escolha **New → Blueprint**.
-5. Conecte o repositório `concordo`.
-6. Confirme a criação do serviço no plano **Free**. O serviço atual ainda se chama `lume-app` apenas para manter o endereço público funcionando.
-7. Aguarde o deploy terminar e abra o endereço `https://...onrender.com` mostrado pelo Render.
+1. Envie os arquivos para o repositório do GitHub.
+2. No Render, abra o serviço `lume-app`.
+3. Use **Manual Deploy → Deploy latest commit** se a publicação automática não começar.
+4. Aguarde o status **Live** e abra `https://lume-app-ym0d.onrender.com`.
 
-Não é necessário configurar variáveis secretas nesta versão.
+## Relay recomendado
 
-## Comportamento do plano gratuito
+Para a chamada funcionar entre redes diferentes, adicione no Render as variáveis secretas `CLOUDFLARE_TURN_KEY_ID` e `CLOUDFLARE_TURN_API_TOKEN`. Nunca coloque o token diretamente no código ou no GitHub.
 
-- O serviço pode adormecer após ficar sem uso.
-- A primeira abertura depois desse período pode demorar cerca de um minuto.
-- Enquanto houver pessoas usando o Concord, o aplicativo envia verificações periódicas para manter o serviço ativo.
-- O histórico atual fica apenas na memória e pode desaparecer quando o serviço reinicia.
-- Fotos, áudios e arquivos também ficam temporariamente na memória e podem expirar em até 24 horas.
+Sem essas variáveis, o Alpendre ainda tenta conexão direta. Ela pode funcionar na mesma rede ou em alguns roteadores, mas não é garantida e não esconde totalmente o IP entre participantes.
 
-## Depois de publicar
+## Plano gratuito
 
-Guarde o endereço `https://...onrender.com`. Ele é o link que você compartilhará com outras pessoas. Também será usado para configurar a próxima versão do aplicativo desktop.
+- O serviço pode adormecer quando não estiver sendo usado.
+- Espaços, histórico e anexos em memória podem desaparecer após reinício.
+- O link público não depende do computador do criador ficar ligado.
