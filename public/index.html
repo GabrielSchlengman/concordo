@@ -146,6 +146,17 @@
     </aside>
   </div>
 
+  <div id="welcome-overlay" class="welcome-overlay" role="dialog" aria-modal="true" aria-label="Entrar no Alpendre">
+    <section class="welcome-card">
+      <img src="/assets/alpendre-chimp-a.png" alt="Chimpanzé do Alpendre">
+      <p class="welcome-kicker">BEM-VINDO AO</p><h1>ALPENDRE</h1>
+      <p>Seu canto para conversar, jogar e compartilhar.</p>
+      <div class="welcome-tabs"><button class="active" data-welcome-tab="guest">Visitante</button><button data-welcome-tab="account">Conta</button></div>
+      <form id="guest-form" class="welcome-form"><label>Como quer aparecer?<input id="guest-name" maxlength="32" placeholder="Seu nome" required></label><button class="primary-button">Entrar como visitante</button><small>Você pode criar uma conta depois, nas configurações.</small></form>
+      <form id="account-form" class="welcome-form hidden"><label>Nome<input id="account-name" maxlength="32" placeholder="Seu nome"></label><label>E-mail<input id="account-email" type="email" autocomplete="email" required></label><label>Senha<input id="account-password" type="password" autocomplete="current-password" minlength="8" required></label><div class="welcome-actions"><button type="submit" class="primary-button">Entrar</button><button id="signup-button" type="button" class="secondary-button">Criar conta</button></div><small id="account-feedback">Use sua conta para manter sua identidade.</small></form>
+    </section>
+  </div>
+
   <div id="spaces-overlay" class="spaces-overlay hidden" role="dialog" aria-modal="true" aria-label="Espaços do Alpendre">
     <section class="spaces-card">
       <header><div><h1>Seus alpendres</h1><p>Entre num espaço público ou crie um convite privado para sua turma.</p></div><button id="close-spaces" class="icon-button" aria-label="Fechar"><span data-icon="close"></span></button></header>
