@@ -14,3 +14,9 @@ grant all on table public.alpendre_state to service_role;
 
 comment on table public.alpendre_state is
   'Estado persistente do MVP Alpendre. Acesso exclusivo do servidor usando SUPABASE_SERVICE_ROLE_KEY.';
+
+insert into storage.buckets (id, name, public, file_size_limit)
+values ('alpendre-files', 'alpendre-files', false, 8388608)
+on conflict (id) do update set public = false, file_size_limit = 8388608;
+
+-- Nenhum visitante acessa o bucket diretamente: downloads passam pelo servidor do Alpendre.

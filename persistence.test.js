@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { createSupabasePersistence } = require('./persistence');
+const { createSupabaseStorage } = require('./storage');
 
 test('usa memória quando o Supabase não está configurado', async () => {
   const persistence = createSupabasePersistence({ url: '', serviceKey: '' });
@@ -34,4 +35,23 @@ test('inclui um schema privado para a service role', () => {
   assert.match(sql, /enable row level security/i);
   assert.match(sql, /revoke all.*anon, authenticated/i);
   assert.match(sql, /grant all.*service_role/i);
+  assert.match(sql, /storage\.buckets/i);
+  assert.match(sql, /alpendre-files/);
+});
+
+test('envia, baixa e remove anexos pelo Storage sem expor a chave', async () => {
+  const calls = [];
+  const storage = createSupabaseStorage({
+    url: 'https://example.supabase.co', serviceKey: 'server-secret',
+    fetchImpl: async (url, options = {}) => {
+      calls.push({ url, options });
+      return { ok: true, arrayBuffer: async () => Buffer.from('arquivo').buffer };
+    },
+  });
+  await storage.upload('attachments/geral/arquivo.txt', Buffer.from('arquivo'), 'text/plain');
+  await storage.download('attachments/geral/arquivo.txt');
+  await storage.remove(['attachments/geral/arquivo.txt']);
+  assert.match(calls[0].url, /storage\/v1\/object\/alpendre-files\/attachments\/geral\/arquivo.txt$/);
+  assert.equal(calls[0].options.headers.Authorization, 'Bearer server-secret');
+  assert.equal(calls[2].options.method, 'DELETE');
 });

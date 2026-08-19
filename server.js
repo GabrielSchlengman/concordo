@@ -4,6 +4,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { URL } = require('node:url');
 const { createSupabasePersistence } = require('./persistence');
+const { createSupabaseStorage } = require('./storage');
 
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const MAX_BODY_BYTES = 384 * 1024;
@@ -30,6 +31,7 @@ const profiles = new Map();
 let storedFileBytes = 0;
 let turnCache = null;
 let activePersistence = createSupabasePersistence();
+let activeStorage = createSupabaseStorage();
 let persistenceReady = Promise.resolve();
 
 function resetRuntimeState() {
@@ -167,11 +169,20 @@ function restorePersistentState(snapshot) {
         name: cleanFileName(attachment.name),
         mime: cleanMime(attachment.mime),
         size: Math.max(0, Number(attachment.size) || 0),
+        stored: attachment.stored === true,
         url: `/api/files/${cleanId(attachment.id)}`,
       })).filter((attachment) => attachment.id),
       attachmentIds: (Array.isArray(message.attachmentIds) ? message.attachmentIds : []).map((idValue) => cleanId(idValue)).filter(Boolean),
       createdAt: /^\d{4}-\d{2}-\d{2}T/.test(String(message.createdAt || '')) ? message.createdAt : new Date().toISOString(),
     })).filter((message) => message.id && (message.text || message.attachments.length));
+    for (const message of room.messages) {
+      for (const attachment of message.attachments) {
+        if (!attachment.stored) continue;
+        const file = { ...attachment, spaceId, room: roomId, createdAt: Date.parse(message.createdAt) || Date.now() };
+        file.storagePath = storageObjectPath(file);
+        files.set(file.id, file);
+      }
+    }
   }
   for (const source of Array.isArray(snapshot.profiles) ? snapshot.profiles.slice(0, 1000) : []) {
     const deviceId = cleanId(source.deviceId);
@@ -288,7 +299,11 @@ function isInlineMime(mime) {
 }
 
 function publicAttachment(file) {
-  return { id: file.id, name: file.name, mime: file.mime, size: file.size, url: `/api/files/${file.id}` };
+  return { id: file.id, name: file.name, mime: file.mime, size: file.size, stored: Boolean(file.storagePath), url: `/api/files/${file.id}` };
+}
+
+function storageObjectPath(file) {
+  return `attachments/${cleanId(file.spaceId, 'space')}/${cleanId(file.room, 'room')}/${cleanId(file.id)}-${encodeURIComponent(file.name)}`;
 }
 
 function publicMessage(message, client) {
@@ -465,10 +480,16 @@ function readBuffer(request, limit = MAX_UPLOAD_BYTES) {
   });
 }
 
-function serveFile(requestUrl, response) {
+async function serveFile(requestUrl, response) {
   const id = cleanId(requestUrl.pathname.split('/').pop(), '');
   const file = files.get(id);
   if (!file) { json(response, 404, { error: 'Este arquivo expirou ou não existe mais.' }); return; }
+  let data = file.data;
+  if (!data && file.storagePath) {
+    try { data = await activeStorage.download(file.storagePath); }
+    catch { json(response, 404, { error: 'Este arquivo não pôde ser encontrado no armazenamento.' }); return; }
+  }
+  if (!data) { json(response, 404, { error: 'Este arquivo expirou ou não existe mais.' }); return; }
   const inline = isInlineMime(file.mime) && requestUrl.searchParams.get('download') !== '1';
   response.writeHead(200, {
     ...securityHeaders,
@@ -478,7 +499,7 @@ function serveFile(requestUrl, response) {
     'Cross-Origin-Resource-Policy': 'same-origin',
     'Cache-Control': 'private, max-age=3600',
   });
-  response.end(file.data);
+  response.end(data);
 }
 
 function serveStatic(requestUrl, response) {
@@ -606,6 +627,7 @@ async function iceServers() {
 function createServer() {
   resetRuntimeState();
   activePersistence = createSupabasePersistence();
+  activeStorage = createSupabaseStorage();
   persistenceReady = activePersistence.load().then((snapshot) => restorePersistentState(snapshot));
   return http.createServer(async (request, response) => {
     const requestUrl = new URL(request.url, `http://${request.headers.host || 'localhost'}`);
@@ -663,7 +685,7 @@ function createServer() {
     }
 
     if (request.method === 'GET' && requestUrl.pathname.startsWith('/api/files/')) {
-      serveFile(requestUrl, response);
+      await serveFile(requestUrl, response);
       return;
     }
 
@@ -781,8 +803,13 @@ function createServer() {
           name: cleanFileName(request.headers['x-file-name']), mime: cleanMime(request.headers['content-type']),
           size: data.length, data, createdAt: Date.now(),
         };
-        files.set(file.id, file); storedFileBytes += file.size; pruneFiles();
-        json(response, 201, { ok: true, attachment: publicAttachment(file), expiresInHours: 24 });
+        if (activeStorage.status().configured) {
+          file.storagePath = storageObjectPath(file);
+          await activeStorage.upload(file.storagePath, data, file.mime);
+          delete file.data;
+        } else { storedFileBytes += file.size; pruneFiles(); }
+        files.set(file.id, file);
+        json(response, 201, { ok: true, attachment: publicAttachment(file), expiresInHours: file.storagePath ? null : 24 });
       } catch (error) { if (!response.writableEnded) json(response, 400, { error: error.message || 'Falha no envio.' }); }
       return;
     }
@@ -838,6 +865,8 @@ function createServer() {
           if (index < 0) { json(response, 404, { error: 'Mensagem não encontrada.' }); return; }
           const message = room.messages[index];
           if (message.ownerDeviceId !== client.deviceId) { json(response, 403, { error: 'Você só pode excluir suas próprias mensagens.' }); return; }
+          const remotePaths = (message.attachmentIds || []).map((attachmentId) => files.get(attachmentId)?.storagePath).filter(Boolean);
+          if (remotePaths.length) await activeStorage.remove(remotePaths);
           room.messages.splice(index, 1);
           for (const attachmentId of message.attachmentIds || []) {
             const file = files.get(attachmentId);
