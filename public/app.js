@@ -29,6 +29,7 @@ const ICONS = {
   download: '<path d="M12 3v12M7 10l5 5 5-5M5 21h14"/>',
   trash: '<path d="M3 6h18M8 6V3h8v3M19 6l-1 15H6L5 6M10 11v6M14 11v6"/>',
   send: '<path d="m22 2-7 20-4-9-9-4 20-7ZM11 13 22 2"/>',
+  refresh: '<path d="M20 11a8 8 0 1 0 2 5M20 4v7h-7"/>',
   close: '<path d="m6 6 12 12M18 6 6 18"/>',
 };
 
@@ -73,7 +74,7 @@ const state = {
   avatar: localStorage.getItem('concord-avatar') || '',
   textRoom: 'geral', voiceRoom: null, eventSource: null,
   textUsers: [], voiceChannels: { lobby: [], jogos: [], musica: [] }, callUsers: [],
-  settings: loadSettings(), peers: new Map(), iceServers: [],
+  settings: loadSettings(), peers: new Map(), iceServers: [], iceRelayReady: false, iceRelayReliable: false, relayProvider: '',
   audioStream: null, cameraStream: null, screenStream: null,
   micEnabled: true, deafened: false, annotationsEnabled: true,
   audioContext: null, audioMonitors: new Map(), voiceFrame: null,
@@ -83,12 +84,12 @@ const state = {
   annotationPanelOpen: false, annotations: new Map(), ownAnnotationIds: [], pendingAvatar: null,
   knownCallUsers: new Map(), callRosterReady: false,
   pendingFiles: [], recorder: null, recordingStream: null, recordingStartedAt: 0, recordingTimer: null,
-  desktopOverlayAvailable: false,
+  desktopOverlayAvailable: false, mediaWarningAt: 0,
 };
 
 const IDS = [
   'room-title','chat-area','messages','message-form','message-input','attachment-tray','attach-button','file-input','record-audio','recording-time','member-count','member-list','toggle-member-list',
-  'call-stage','call-title','call-status','video-grid','layout-button','participant-video-button','self-view-button','fullscreen-button',
+  'call-stage','call-title','call-status','video-grid','reconnect-media','layout-button','participant-video-button','self-view-button','fullscreen-button',
   'annotation-toolbar','annotation-target','close-annotation','draw-size','undo-drawing','clear-drawings','annotation-permission-row','allow-annotations','annotation-help','call-mic','call-deafen','call-camera','call-screen','call-draw','leave-call',
   'connection-panel','connected-room','disconnect-voice','profile-button','profile-avatar','profile-fallback','self-name','self-status','bar-mic','bar-deafen','open-settings',
   'settings-overlay','close-settings','settings-avatar','settings-avatar-fallback','settings-name-display','display-name','avatar-input','remove-avatar','save-profile','profile-feedback',
@@ -482,8 +483,12 @@ async function loadIceServers() {
     const response = await fetch('/api/ice', { cache: 'no-store' });
     const data = await response.json();
     state.iceServers = Array.isArray(data.iceServers) ? data.iceServers : [];
+    state.iceRelayReady = data.relayReady === true;
+    state.iceRelayReliable = data.relayReliable === true;
+    state.relayProvider = String(data.relayProvider || '');
   } catch {
     state.iceServers = [{ urls: 'stun:stun.l.google.com:19302' }];
+    state.iceRelayReady = false; state.iceRelayReliable = false; state.relayProvider = '';
   }
 }
 
@@ -640,6 +645,16 @@ function syncCallUsers(users) {
   renderCall(); renderMembers(); renderVoiceChannels();
 }
 
+function updateCallConnectionStatus() {
+  if (!state.voiceRoom) return;
+  const total = Math.max(1, state.callUsers.length);
+  const remoteCount = state.callUsers.filter((user) => user.id !== state.clientId).length;
+  const connectedCount = [...state.peers.values()].filter((peer) => peer.pc.connectionState === 'connected').length;
+  if (!remoteCount) el.callStatus.textContent = `${total} na chamada`;
+  else if (connectedCount === remoteCount) el.callStatus.textContent = `${total} na chamada · mídia conectada${state.settings.protectIp ? ' · IP protegido' : ''}`;
+  else el.callStatus.textContent = `${total} na chamada · conectando áudio e vídeo…`;
+}
+
 function createPeer(userId) {
   if (!state.voiceRoom || userId === state.clientId || state.peers.has(userId)) return state.peers.get(userId);
   const pc = new RTCPeerConnection({
@@ -649,31 +664,25 @@ function createPeer(userId) {
   });
   const peer = {
     id: userId, pc, polite: state.clientId.localeCompare(userId) > 0,
+    initiator: state.clientId.localeCompare(userId) < 0,
     makingOffer: false, ignoreOffer: false, settingRemoteAnswer: false,
     pendingCandidates: [], remoteStreams: new Map(), description: {},
     audioNodes: [], reconnectAttempts: 0, disconnectTimer: null, connectTimer: null,
+    negotiationQueued: false, recovering: false,
   };
   state.peers.set(userId, peer);
   addLocalTracks(peer);
 
   pc.onicecandidate = ({ candidate }) => {
-    if (candidate) sendSignal(userId, { candidate }).catch(() => {});
+    sendSignal(userId, candidate ? { candidate } : { candidate: null, endOfCandidates: true }).catch(() => {});
   };
-  pc.onnegotiationneeded = async () => {
-    try {
-      peer.makingOffer = true;
-      await pc.setLocalDescription();
-      await sendSignal(userId, { description: pc.localDescription });
-      await sendMediaDescription(userId);
-    } catch (error) { console.warn('negociação', error); }
-    finally { peer.makingOffer = false; }
-  };
+  pc.onnegotiationneeded = () => negotiatePeer(peer);
   pc.ontrack = (event) => handleRemoteTrack(peer, event);
   pc.onconnectionstatechange = () => {
     const status = pc.connectionState;
     if (status === 'connected') {
       peer.reconnectAttempts = 0; clearTimeout(peer.disconnectTimer); clearTimeout(peer.connectTimer);
-      el.callStatus.textContent = `${Math.max(1, state.callUsers.length)} na chamada · mídia conectada${state.settings.protectIp ? ' · relay protegido' : ''}`;
+      updateCallConnectionStatus();
     } else if (status === 'failed') {
       recoverPeer(peer);
     } else if (status === 'disconnected') {
@@ -682,10 +691,29 @@ function createPeer(userId) {
         if (pc.connectionState === 'disconnected') recoverPeer(peer);
       }, 6000);
     }
+    renderVideoGrid();
   };
   schedulePeerWatchdog(peer);
   announceMediaDescription(userId);
   return peer;
+}
+
+async function negotiatePeer(peer, { iceRestart = false } = {}) {
+  if (!state.peers.has(peer.id) || peer.pc.connectionState === 'closed') return;
+  if (peer.makingOffer || peer.pc.signalingState !== 'stable') { peer.negotiationQueued = true; return; }
+  if (!peer.initiator && !peer.pc.remoteDescription) return;
+  peer.negotiationQueued = false;
+  try {
+    peer.makingOffer = true;
+    if (iceRestart) await peer.pc.setLocalDescription(await peer.pc.createOffer({ iceRestart: true }));
+    else await peer.pc.setLocalDescription();
+    await sendSignal(peer.id, { description: peer.pc.localDescription });
+    await sendMediaDescription(peer.id);
+  } catch (error) { console.warn('negociação', error); }
+  finally {
+    peer.makingOffer = false;
+    if (peer.negotiationQueued && peer.pc.signalingState === 'stable') setTimeout(() => negotiatePeer(peer), 0);
+  }
 }
 
 function schedulePeerWatchdog(peer) {
@@ -696,20 +724,26 @@ function schedulePeerWatchdog(peer) {
 }
 
 async function recoverPeer(peer) {
-  if (!state.peers.has(peer.id) || !state.voiceRoom) return;
+  if (!state.peers.has(peer.id) || !state.voiceRoom || peer.recovering) return;
+  peer.recovering = true;
   peer.reconnectAttempts += 1;
+  el.callStatus.textContent = `${Math.max(1, state.callUsers.length)} na chamada · recuperando áudio e vídeo…`;
   if (peer.reconnectAttempts <= 2) {
     try {
-      peer.pc.restartIce();
-      peer.makingOffer = true;
-      await peer.pc.setLocalDescription(await peer.pc.createOffer({ iceRestart: true }));
-      await sendSignal(peer.id, { description: peer.pc.localDescription });
+      if (peer.initiator) await negotiatePeer(peer, { iceRestart: true });
+      else await sendSignal(peer.id, { restartRequest: true });
       schedulePeerWatchdog(peer);
     } catch (error) { console.warn('reinício ICE', error); }
-    finally { peer.makingOffer = false; }
+    finally { peer.recovering = false; }
     return;
   }
   removePeer(peer.id);
+  if (Date.now() - state.mediaWarningAt > 25_000) {
+    state.mediaWarningAt = Date.now();
+    toast(state.iceRelayReliable
+      ? 'A rede bloqueou a mídia. Clique em Reconectar e tente novamente.'
+      : 'A rota externa de mídia está limitada. O áudio/vídeo pode não abrir entre redes diferentes.', 'error');
+  }
   setTimeout(() => { if (state.callUsers.some((user) => user.id === peer.id)) createPeer(peer.id); }, 700);
 }
 
@@ -728,6 +762,10 @@ async function handleSignal(from, data) {
       renderVideoGrid();
       return;
     }
+    if (data.restartRequest) {
+      if (peer.initiator) await negotiatePeer(peer, { iceRestart: true });
+      return;
+    }
     if (data.description) {
       const readyForOffer = !peer.makingOffer && (pc.signalingState === 'stable' || peer.settingRemoteAnswer);
       const offerCollision = data.description.type === 'offer' && !readyForOffer;
@@ -736,17 +774,20 @@ async function handleSignal(from, data) {
       peer.settingRemoteAnswer = data.description.type === 'answer';
       await pc.setRemoteDescription(data.description);
       peer.settingRemoteAnswer = false;
-      while (peer.pendingCandidates.length) await pc.addIceCandidate(peer.pendingCandidates.shift());
+      while (peer.pendingCandidates.length) await pc.addIceCandidate(peer.pendingCandidates.shift()).catch(() => {});
       if (data.description.type === 'offer') {
-        await pc.setLocalDescription();
+        await pc.setLocalDescription(await pc.createAnswer());
         await sendSignal(from, { description: pc.localDescription });
         await sendMediaDescription(from);
       }
+      if (peer.negotiationQueued && pc.signalingState === 'stable') setTimeout(() => negotiatePeer(peer), 0);
       return;
     }
-    if (data.candidate) {
-      if (pc.remoteDescription) await pc.addIceCandidate(data.candidate);
-      else peer.pendingCandidates.push(data.candidate);
+    if ('candidate' in data || data.endOfCandidates) {
+      if (peer.ignoreOffer) return;
+      const candidate = data.candidate || null;
+      if (pc.remoteDescription) await pc.addIceCandidate(candidate).catch(() => {});
+      else peer.pendingCandidates.push(candidate);
     }
   } catch (error) {
     if (!peer.ignoreOffer) console.warn('sinal WebRTC', error);
@@ -847,11 +888,12 @@ function closeAllPeers() {
   for (const id of [...state.peers.keys()]) removePeer(id);
 }
 
-function rebuildPeerConnections() {
+async function rebuildPeerConnections() {
   if (!state.voiceRoom) return;
+  await loadIceServers();
   const peers = state.callUsers.filter((user) => user.id !== state.clientId).map((user) => user.id);
   closeAllPeers(); peers.forEach(createPeer);
-  el.callStatus.textContent = `${Math.max(1, state.callUsers.length)} na chamada · reconectando com IP ${state.settings.protectIp ? 'protegido' : 'direto'}`;
+  el.callStatus.textContent = `${Math.max(1, state.callUsers.length)} na chamada · refazendo áudio e vídeo…`;
 }
 
 async function toggleMicrophone() {
@@ -980,17 +1022,28 @@ function remoteVideoStreams(peer, user) {
   return { camera, screen };
 }
 
-function makeVideoTile({ key, user, stream, screen = false, local = false, hiddenVideo = false }) {
+function makeVideoTile({ key, user, stream, screen = false, local = false, hiddenVideo = false, connectionState = 'connected' }) {
   const tile = document.createElement('article');
   tile.className = `video-tile${screen ? ' screen' : ''}`;
   tile.dataset.key = key; tile.dataset.userId = user.id;
   if (state.speaking.has(user.id)) tile.classList.add('speaking');
   if (hiddenVideo) tile.classList.add('video-hidden');
   const video = document.createElement('video'); video.autoplay = true; video.playsInline = true; video.muted = local;
-  if (stream) { video.srcObject = stream; tile.classList.add('has-video'); video.play().catch(() => {}); }
+  if (stream) {
+    video.srcObject = stream;
+    const reveal = () => { if (local || (connectionState === 'connected' && video.readyState >= 2)) tile.classList.add('has-video'); };
+    video.addEventListener('loadeddata', reveal); video.addEventListener('playing', reveal);
+    if (local) tile.classList.add('has-video');
+    video.play().then(reveal).catch(() => {});
+  }
   const fallback = document.createElement('div'); fallback.className = 'tile-fallback';
-  if (screen && !stream) {
+  if (!local && connectionState !== 'connected') {
+    const waiting = document.createElement('div'); waiting.className = 'screen-wait'; waiting.innerHTML = `${iconSvg(screen ? 'screen' : 'refresh')}<strong>Abrindo áudio e vídeo…</strong><small>A conexão de mídia ainda não foi concluída.</small>`;
+    const retry = document.createElement('button'); retry.className = 'toolbar-button'; retry.innerHTML = `${iconSvg('refresh')}<span>Reconectar</span>`; retry.addEventListener('click', (event) => { event.stopPropagation(); rebuildPeerConnections(); }); waiting.append(retry); fallback.append(waiting);
+  } else if (screen && !stream) {
     const waiting = document.createElement('div'); waiting.className = 'screen-wait'; waiting.innerHTML = `${iconSvg('screen')}<strong>Conectando à tela…</strong><small>O Concord está recuperando a transmissão.</small>`; fallback.append(waiting);
+  } else if (screen && stream) {
+    const waiting = document.createElement('div'); waiting.className = 'screen-wait'; waiting.innerHTML = `${iconSvg('screen')}<strong>Recebendo a tela…</strong><small>Aguardando os primeiros quadros.</small>`; fallback.append(waiting);
   } else fallback.append(avatarNode(user));
   const label = document.createElement('div'); label.className = 'tile-label';
   label.innerHTML = iconSvg(user.media?.micEnabled === false ? 'mic-off' : 'mic');
@@ -1027,10 +1080,10 @@ function renderVideoGrid() {
     const streams = remoteVideoStreams(peer, user);
     const preference = userPreference(user.id);
     if (state.settings.participantVideo) {
-      tiles.push(makeVideoTile({ key: `camera-${user.id}`, user, stream: streams.camera, hiddenVideo: preference.hideVideo }));
+      tiles.push(makeVideoTile({ key: `camera-${user.id}`, user, stream: streams.camera, hiddenVideo: preference.hideVideo, connectionState: peer.pc.connectionState }));
     }
     if (user.media?.screenSharing || streams.screen) {
-      tiles.push(makeVideoTile({ key: `screen-${user.id}`, user, stream: streams.screen, screen: true }));
+      tiles.push(makeVideoTile({ key: `screen-${user.id}`, user, stream: streams.screen, screen: true, connectionState: peer.pc.connectionState }));
       if (state.settings.autoFocus && !state.pinnedUserId) { state.layout = 'focus'; state.autoFocusedShareId = user.id; }
     }
   }
@@ -1266,7 +1319,7 @@ function renderCall() {
   el.callStage.classList.toggle('hidden', !active); el.connectionPanel.classList.toggle('hidden', !active);
   if (!active) return;
   el.callTitle.textContent = CHANNELS[state.voiceRoom]; el.connectedRoom.textContent = CHANNELS[state.voiceRoom];
-  el.callStatus.textContent = `${Math.max(1, state.callUsers.length)} na chamada`;
+  updateCallConnectionStatus();
   updateSelfUI(); renderVideoGrid();
 }
 
@@ -1507,6 +1560,7 @@ el.messageInput.addEventListener('paste', (event) => {
 [el.barMic, el.callMic].forEach((button) => button.addEventListener('click', toggleMicrophone));
 [el.barDeafen, el.callDeafen].forEach((button) => button.addEventListener('click', toggleDeafen));
 el.callCamera.addEventListener('click', toggleCamera); el.callScreen.addEventListener('click', toggleScreen); el.callDraw.addEventListener('click', toggleAnnotationPanel);
+el.reconnectMedia.addEventListener('click', rebuildPeerConnections);
 el.leaveCall.addEventListener('click', leaveCall); el.disconnectVoice.addEventListener('click', leaveCall);
 el.layoutButton.addEventListener('click', toggleLayout);
 el.fullscreenButton.addEventListener('click', async () => {
@@ -1624,3 +1678,4 @@ navigator.mediaDevices?.addEventListener?.('devicechange', refreshDevices);
 applyAppearance(); syncSettingsControls(); updateSelfUI(); updateControlStates(); updateProcessingStatus();
 state.annotationsEnabled = state.settings.annotations;
 loadIceServers().finally(connectEvents);
+

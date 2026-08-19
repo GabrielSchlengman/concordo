@@ -56,13 +56,14 @@ async function closeEvents(...sessions) {
   sessions.forEach((session) => session.controller.abort());
 }
 
-test('publica a versão 0.6 e os servidores ICE', async () => {
+test('publica a versão 0.7 e os servidores ICE', async () => {
   await withServer(async (baseUrl) => {
     const health = await fetch(`${baseUrl}/api/health`);
-    assert.deepEqual(await health.json(), { ok: true, name: 'Concord', version: '0.6.0' });
+    assert.deepEqual(await health.json(), { ok: true, name: 'Concord', version: '0.7.0' });
     assert.equal(health.headers.get('x-content-type-options'), 'nosniff');
     const ice = await (await fetch(`${baseUrl}/api/ice`)).json();
     assert.ok(ice.iceServers.some((server) => String(server.urls).includes('turn:')));
+    assert.equal(ice.relayReady, true);
   });
 });
 
@@ -204,3 +205,4 @@ test('preserva a chamada ao trocar o canal de texto', async () => {
     await closeEvents(first, second);
   });
 });
+

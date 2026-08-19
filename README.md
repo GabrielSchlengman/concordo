@@ -36,7 +36,7 @@ Alguns navegadores só liberam câmera, microfone e compartilhamento de tela em 
 - Envio de fotos, áudios, mensagens de voz e arquivos de até 8 MB por clique, colagem ou arrastar e soltar.
 - Imagens, vídeos, áudios, PDF e texto podem ser visualizados no Concord; todos os anexos têm opção de download.
 - Lista de pessoas conectadas no texto e em cada canal de voz.
-- Áudio e vídeo via WebRTC com STUN/TURN, reprodução compatível, recuperação automática e renegociação. O modo normal escolhe a rota que funciona; a proteção rígida por retransmissão é opcional.
+- Áudio e vídeo via WebRTC com STUN/TURN, oferta inicial determinística, reprodução compatível, recuperação automática, renegociação e botão de reconexão. O modo normal escolhe a rota que funciona; a proteção rígida por retransmissão é opcional.
 - Microfone, câmera, ensurdecimento do fone e volume geral ou individual.
 - Menu por participante no botão direito para silenciar, ajustar volume, esconder vídeo ou priorizar.
 - Compartilhamento de tela com preview local opcional.
@@ -55,7 +55,7 @@ Alguns navegadores só liberam câmera, microfone e compartilhamento de tela em 
 - Contas, servidores e mensagens não são salvos em banco de dados.
 - Os anexos ficam temporariamente na memória do serviço, podem expirar em até 24 horas e somam no máximo 64 MB nesta versão gratuita.
 - As chamadas usam conexão P2P, adequada para pequenos grupos.
-- O TURN público incluído é um fallback gratuito. A proteção rígida de IP exige um TURN confiável; para usá-la sem perder mídia, configure credenciais próprias pelas variáveis `TURN_URLS`, `TURN_USERNAME` e `TURN_CREDENTIAL` no Render.
+- Sem um TURN de produção, o fallback gratuito serve apenas para desenvolvimento e pode limitar ou bloquear mídia entre redes diferentes. O servidor aceita `TURN_URLS`, `TURN_USERNAME` e `TURN_CREDENTIAL`, uma URL de credenciais do Metered em `METERED_TURN_URL`, ou as credenciais de chave do Cloudflare em `CLOUDFLARE_TURN_KEY_ID` e `CLOUDFLARE_TURN_API_TOKEN`.
 - Para grupos maiores, a chamada deve migrar de P2P para uma arquitetura SFU.
 
 ## Próximas etapas sugeridas
@@ -65,3 +65,4 @@ Alguns navegadores só liberam câmera, microfone e compartilhamento de tela em 
 3. Reações, respostas e mensagens privadas.
 4. Infraestrutura de mídia SFU para chamadas maiores.
 5. Empacotamento desktop e notificações do sistema.
+

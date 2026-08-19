@@ -20,6 +20,7 @@ const requestWindows = new Map();
 const files = new Map();
 const annotationItems = new Map();
 let storedFileBytes = 0;
+let turnCache = null;
 
 const securityHeaders = {
   'Content-Security-Policy': "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' https: wss:; style-src 'self' 'unsafe-inline'; script-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
@@ -180,7 +181,8 @@ function json(response, status, body) {
 }
 
 function isRateLimited(request) {
-  const address = request.socket.remoteAddress || 'desconhecido';
+  const forwarded = String(request.headers['x-forwarded-for'] || '').split(',')[0].trim();
+  const address = forwarded || request.socket.remoteAddress || 'desconhecido';
   const now = Date.now();
   const current = requestWindows.get(address);
   if (!current || now - current.startedAt >= 60_000) {
@@ -301,26 +303,69 @@ function scheduleDisconnect(clientId, response) {
   client.disconnectTimer.unref?.();
 }
 
-function iceServers() {
+function validIceServers(value) {
+  return Array.isArray(value) && value.some((server) => {
+    const urls = Array.isArray(server?.urls) ? server.urls : [server?.urls];
+    return urls.some((url) => /^turns?:/i.test(String(url || ''))) && server.username && server.credential;
+  });
+}
+
+async function providerIceServers() {
+  if (turnCache?.expiresAt > Date.now()) return turnCache.value;
+  const cloudflareKeyId = String(process.env.CLOUDFLARE_TURN_KEY_ID || '').trim();
+  const cloudflareToken = String(process.env.CLOUDFLARE_TURN_API_TOKEN || '').trim();
+  const meteredUrl = String(process.env.METERED_TURN_URL || '').trim();
+  let value = null;
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 7000);
+    let response = null;
+    if (cloudflareKeyId && cloudflareToken) {
+      response = await fetch(`https://rtc.live.cloudflare.com/v1/turn/keys/${encodeURIComponent(cloudflareKeyId)}/credentials/generate-ice-servers`, {
+        method: 'POST', signal: controller.signal,
+        headers: { Authorization: `Bearer ${cloudflareToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ttl: 86_400 }),
+      });
+      if (response.ok) {
+        const payload = await response.json();
+        if (validIceServers(payload.iceServers)) value = { iceServers: payload.iceServers, relayReady: true, relayReliable: true, relayProvider: 'cloudflare' };
+      }
+    } else if (/^https:\/\/[a-z0-9.-]+\.metered\.live\/api\/v1\/turn\/credentials\?/i.test(meteredUrl)) {
+      response = await fetch(meteredUrl, { signal: controller.signal, headers: { Accept: 'application/json' } });
+      if (response.ok) {
+        const payload = await response.json();
+        if (validIceServers(payload)) value = { iceServers: payload, relayReady: true, relayReliable: true, relayProvider: 'metered' };
+      }
+    }
+    clearTimeout(timer);
+    if (response && !response.ok) console.warn(`TURN provider respondeu ${response.status}`);
+  } catch (error) {
+    console.warn(`TURN provider indisponível: ${error.name || 'erro'}`);
+  }
+  if (value) turnCache = { expiresAt: Date.now() + 12 * 60 * 60 * 1000, value };
+  return value;
+}
+
+async function iceServers() {
   const configuredUrls = String(process.env.TURN_URLS || '').split(',').map((item) => item.trim()).filter(Boolean);
   if (configuredUrls.length && process.env.TURN_USERNAME && process.env.TURN_CREDENTIAL) {
-    return [
-      { urls: ['stun:stun.l.google.com:19302', 'stun:stun.relay.metered.ca:80'] },
-      { urls: configuredUrls, username: process.env.TURN_USERNAME, credential: process.env.TURN_CREDENTIAL },
-    ];
-  }
-  return [
-    { urls: ['stun:stun.l.google.com:19302', 'stun:stun.relay.metered.ca:80'] },
-    {
-      urls: [
-        'turn:openrelay.metered.ca:80',
-        'turn:openrelay.metered.ca:443',
-        'turn:openrelay.metered.ca:443?transport=tcp',
+    return {
+      iceServers: [
+        { urls: ['stun:stun.l.google.com:19302', 'stun:stun.cloudflare.com:3478'] },
+        { urls: configuredUrls, username: process.env.TURN_USERNAME, credential: process.env.TURN_CREDENTIAL },
       ],
-      username: 'openrelayproject',
-      credential: 'openrelayproject',
-    },
-  ];
+      relayReady: true, relayReliable: true, relayProvider: 'custom',
+    };
+  }
+  const provider = await providerIceServers();
+  if (provider) return provider;
+  return {
+    iceServers: [
+      { urls: ['stun:stun.l.google.com:19302', 'stun:freestun.net:3478'] },
+      { urls: ['turn:freestun.net:3478', 'turn:freestun.net:3478?transport=tcp'], username: 'free', credential: 'free' },
+    ],
+    relayReady: true, relayReliable: false, relayProvider: 'development',
+  };
 }
 
 function createServer() {
@@ -334,12 +379,12 @@ function createServer() {
     }
 
     if (request.method === 'GET' && requestUrl.pathname === '/api/health') {
-      json(response, 200, { ok: true, name: 'Concord', version: '0.6.0' });
+      json(response, 200, { ok: true, name: 'Concord', version: '0.7.0' });
       return;
     }
 
     if (request.method === 'GET' && requestUrl.pathname === '/api/ice') {
-      json(response, 200, { iceServers: iceServers() });
+      json(response, 200, await iceServers());
       return;
     }
 
@@ -645,3 +690,4 @@ if (require.main === module) {
 }
 
 module.exports = { createServer };
+
