@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { URL } = require('node:url');
+const { createSupabasePersistence } = require('./persistence');
 
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const MAX_BODY_BYTES = 384 * 1024;
@@ -25,12 +26,15 @@ const clients = new Map();
 const requestWindows = new Map();
 const files = new Map();
 const annotationItems = new Map();
+const profiles = new Map();
 let storedFileBytes = 0;
 let turnCache = null;
+let activePersistence = createSupabasePersistence();
+let persistenceReady = Promise.resolve();
 
 function resetRuntimeState() {
   for (const client of clients.values()) clearTimeout(client.disconnectTimer);
-  rooms.clear(); clients.clear(); requestWindows.clear(); files.clear(); annotationItems.clear();
+  rooms.clear(); clients.clear(); requestWindows.clear(); files.clear(); annotationItems.clear(); profiles.clear();
   spaces.clear();
   spaces.set(DEFAULT_SPACE_ID, createSpaceRecord({ id: DEFAULT_SPACE_ID, name: 'Alpendre', visibility: 'public' }));
   storedFileBytes = 0;
@@ -91,6 +95,92 @@ function createSpaceRecord({ id, name, visibility, ownerDeviceId = null }) {
     channels: { text: { ...DEFAULT_CHANNEL_NAMES.text }, voice: { ...DEFAULT_CHANNEL_NAMES.voice } },
     createdAt: new Date().toISOString(),
   };
+}
+
+function persistentSnapshot() {
+  return {
+    version: 1,
+    spaces: [...spaces.values()].map((space) => ({
+      id: space.id,
+      name: space.name,
+      visibility: space.visibility,
+      ownerDeviceId: space.ownerDeviceId,
+      inviteCode: space.inviteCode,
+      members: [...space.members],
+      banned: [...space.banned],
+      channels: space.channels,
+      createdAt: space.createdAt,
+    })),
+    rooms: [...rooms].map(([key, room]) => ({
+      key,
+      messages: room.messages.slice(-100).map((message) => ({
+        ...message,
+        attachments: (message.attachments || []).map((attachment) => ({ ...attachment })),
+      })),
+    })).filter((room) => room.messages.length),
+    profiles: [...profiles].map(([deviceId, profile]) => ({ deviceId, ...profile })),
+  };
+}
+
+function restorePersistentState(snapshot) {
+  if (!snapshot || snapshot.version !== 1) return;
+  spaces.clear(); rooms.clear(); profiles.clear();
+  for (const source of Array.isArray(snapshot.spaces) ? snapshot.spaces.slice(0, 100) : []) {
+    const id = cleanSpaceId(source.id, '');
+    if (!id || spaces.has(id)) continue;
+    const space = createSpaceRecord({
+      id,
+      name: cleanSpaceName(source.name),
+      visibility: source.visibility === 'private' ? 'private' : 'public',
+      ownerDeviceId: cleanId(source.ownerDeviceId) || null,
+    });
+    const inviteCode = String(source.inviteCode || '').trim().toUpperCase();
+    if (/^(?:ALPENDRE|ALP-[A-F0-9]{8})$/.test(inviteCode)) space.inviteCode = inviteCode;
+    space.members = new Set((Array.isArray(source.members) ? source.members : []).map((idValue) => cleanId(idValue)).filter(Boolean));
+    space.banned = new Set((Array.isArray(source.banned) ? source.banned : []).map((idValue) => cleanId(idValue)).filter(Boolean));
+    for (const kind of ['text', 'voice']) {
+      for (const channelId of Object.keys(DEFAULT_CHANNEL_NAMES[kind])) {
+        space.channels[kind][channelId] = cleanChannelName(source.channels?.[kind]?.[channelId], DEFAULT_CHANNEL_NAMES[kind][channelId]);
+      }
+    }
+    if (/^\d{4}-\d{2}-\d{2}T/.test(String(source.createdAt || ''))) space.createdAt = source.createdAt;
+    spaces.set(id, space);
+  }
+  if (!spaces.has(DEFAULT_SPACE_ID)) spaces.set(DEFAULT_SPACE_ID, createSpaceRecord({ id: DEFAULT_SPACE_ID, name: 'Alpendre', visibility: 'public' }));
+  const defaultSpace = spaces.get(DEFAULT_SPACE_ID);
+  defaultSpace.name = 'Alpendre'; defaultSpace.visibility = 'public'; defaultSpace.ownerDeviceId = null; defaultSpace.inviteCode = 'ALPENDRE';
+
+  for (const source of Array.isArray(snapshot.rooms) ? snapshot.rooms.slice(0, 300) : []) {
+    const [spaceId, rawRoomId] = String(source.key || '').split(':');
+    const roomId = cleanRoom(rawRoomId, '');
+    if (!spaces.has(spaceId) || !roomId) continue;
+    const room = getRoom(spaceId, roomId);
+    room.messages = (Array.isArray(source.messages) ? source.messages.slice(-100) : []).map((message) => ({
+      id: cleanId(message.id),
+      clientId: cleanId(message.clientId),
+      ownerDeviceId: cleanId(message.ownerDeviceId),
+      name: cleanName(message.name),
+      avatar: cleanAvatar(message.avatar),
+      text: String(message.text || '').slice(0, 2000),
+      attachments: (Array.isArray(message.attachments) ? message.attachments.slice(0, MAX_ATTACHMENTS_PER_MESSAGE) : []).map((attachment) => ({
+        id: cleanId(attachment.id),
+        name: cleanFileName(attachment.name),
+        mime: cleanMime(attachment.mime),
+        size: Math.max(0, Number(attachment.size) || 0),
+        url: `/api/files/${cleanId(attachment.id)}`,
+      })).filter((attachment) => attachment.id),
+      attachmentIds: (Array.isArray(message.attachmentIds) ? message.attachmentIds : []).map((idValue) => cleanId(idValue)).filter(Boolean),
+      createdAt: /^\d{4}-\d{2}-\d{2}T/.test(String(message.createdAt || '')) ? message.createdAt : new Date().toISOString(),
+    })).filter((message) => message.id && (message.text || message.attachments.length));
+  }
+  for (const source of Array.isArray(snapshot.profiles) ? snapshot.profiles.slice(0, 1000) : []) {
+    const deviceId = cleanId(source.deviceId);
+    if (deviceId) profiles.set(deviceId, { name: cleanName(source.name), avatar: cleanAvatar(source.avatar) });
+  }
+}
+
+function persistRuntimeState() {
+  activePersistence.schedule(persistentSnapshot());
 }
 
 function spaceSlug(name) {
@@ -233,6 +323,7 @@ function cleanMediaState(value) {
     micEnabled: value?.micEnabled !== false,
     cameraEnabled: value?.cameraEnabled === true,
     screenSharing: value?.screenSharing === true,
+    screenAudio: value?.screenAudio === true,
     annotationsEnabled: value?.annotationsEnabled === true,
     deafened: value?.deafened === true,
   };
@@ -514,8 +605,11 @@ async function iceServers() {
 
 function createServer() {
   resetRuntimeState();
+  activePersistence = createSupabasePersistence();
+  persistenceReady = activePersistence.load().then((snapshot) => restorePersistentState(snapshot));
   return http.createServer(async (request, response) => {
     const requestUrl = new URL(request.url, `http://${request.headers.host || 'localhost'}`);
+    await persistenceReady;
 
     if (request.method === 'GET' && requestUrl.pathname === '/') {
       response.writeHead(302, { ...securityHeaders, Location: '/index.html', 'Cache-Control': 'no-store' });
@@ -524,7 +618,7 @@ function createServer() {
     }
 
     if (request.method === 'GET' && requestUrl.pathname === '/api/health') {
-      json(response, 200, { ok: true, name: 'Alpendre', version: '1.1.1' });
+      json(response, 200, { ok: true, name: 'Alpendre', version: '1.2.0', persistence: activePersistence.status() });
       return;
     }
 
@@ -554,6 +648,7 @@ function createServer() {
         const id = visibility === 'private' ? `priv-${crypto.randomBytes(12).toString('hex')}` : spaceSlug(name);
         const space = createSpaceRecord({ id, name, visibility, ownerDeviceId: creator.deviceId });
         spaces.set(id, space);
+        persistRuntimeState();
         broadcastAll({ type: 'spaces-updated' });
         json(response, 201, { ok: true, space: publicSpace(space, creator) });
       } catch (error) {
@@ -628,7 +723,7 @@ function createServer() {
       const client = existing || {
         id: clientId,
         sessionToken: crypto.randomBytes(32).toString('base64url'),
-        avatar: '',
+        avatar: profiles.get(deviceId)?.avatar || '',
         voiceRoom: null,
         media: cleanMediaState(),
       };
@@ -637,7 +732,11 @@ function createServer() {
       client.response = response;
       client.textRoom = textRoom;
       client.spaceId = spaceId;
-      if (space.visibility === 'public' || space.id === DEFAULT_SPACE_ID) space.members.add(deviceId);
+      if (space.visibility === 'public' || space.id === DEFAULT_SPACE_ID) {
+        const wasMember = space.members.has(deviceId);
+        space.members.add(deviceId);
+        if (!wasMember) persistRuntimeState();
+      }
       client.disconnectTimer = null;
       clients.set(clientId, client);
       nextRoom.clients.set(clientId, client);
@@ -725,6 +824,7 @@ function createServer() {
           };
           room.messages.push(message);
           if (room.messages.length > 100) room.messages.shift();
+          persistRuntimeState();
           broadcastMessage(client.spaceId, roomId, message);
           json(response, 201, { ok: true });
           return;
@@ -743,6 +843,7 @@ function createServer() {
             const file = files.get(attachmentId);
             if (file) { files.delete(attachmentId); storedFileBytes -= file.size; }
           }
+          persistRuntimeState();
           broadcastTextRoom(client.spaceId, roomId, { type: 'message-deleted', messageId });
           json(response, 200, { ok: true });
           return;
@@ -751,6 +852,8 @@ function createServer() {
         if (requestUrl.pathname === '/api/profile') {
           client.name = cleanName(body.name || client.name);
           if (Object.hasOwn(body, 'avatar')) client.avatar = cleanAvatar(body.avatar);
+          profiles.set(client.deviceId, { name: client.name, avatar: client.avatar });
+          persistRuntimeState();
           sendTextPresence(client.spaceId, client.textRoom);
           sendVoiceState(client.spaceId);
           json(response, 200, { ok: true, user: publicUser(client) });
@@ -763,6 +866,7 @@ function createServer() {
           if (!space) { json(response, 404, { error: 'Código de convite inválido ou expirado.' }); return; }
           if (space.banned.has(client.deviceId)) { json(response, 403, { error: 'Você foi removido deste espaço pelo administrador.' }); return; }
           space.members.add(client.deviceId);
+          persistRuntimeState();
           broadcastAll({ type: 'spaces-updated' });
           json(response, 200, { ok: true, space: publicSpace(space, client) });
           return;
@@ -792,6 +896,7 @@ function createServer() {
             space.members.delete(target.deviceId); space.banned.add(target.deviceId);
             writeSse(target.response, { type: 'space-removed', spaceId: space.id, reason: 'kicked' });
           } else { json(response, 400, { error: 'Ação inválida.' }); return; }
+          persistRuntimeState();
           broadcastAll({ type: 'spaces-updated' });
           json(response, 200, { ok: true });
           return;
@@ -805,6 +910,7 @@ function createServer() {
           const allowed = kind === 'voice' ? VOICE_ROOMS : TEXT_ROOMS;
           if (!allowed.has(channelId)) { json(response, 400, { error: 'Canal inválido.' }); return; }
           space.channels[kind][channelId] = cleanChannelName(body.name, DEFAULT_CHANNEL_NAMES[kind][channelId]);
+          persistRuntimeState();
           const updated = publicSpace(space, client);
           for (const member of clients.values()) if (member.spaceId === space.id) writeSse(member.response, { type: 'space-updated', space: publicSpace(space, member) });
           json(response, 200, { ok: true, space: updated });
@@ -965,7 +1071,10 @@ if (require.main === module) {
     shuttingDown = true;
     broadcastAll({ type: 'server-restarting' });
     for (const client of clients.values()) client.response?.end();
-    server.close(() => process.exit(0));
+    server.close(async () => {
+      await activePersistence.flush();
+      process.exit(0);
+    });
     setTimeout(() => process.exit(0), 10_000).unref();
   };
   process.on('SIGTERM', shutdown);

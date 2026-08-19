@@ -1,4 +1,4 @@
-# Alpendre 1.1.1 — recuperação segura do servidor público padrão
+# Alpendre 1.2.0 — áudio da tela e persistência opcional
 services:
   - type: web
     name: lume-app

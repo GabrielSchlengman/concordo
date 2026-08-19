@@ -3,6 +3,9 @@ dist/
 .electron-cache/
 .runtime/
 *.log
+.env
+.env.*
+!.env.example
 .DS_Store
 ../Alpendre-desktop-build/
 ../Alpendre-Desktop-Windows.zip
