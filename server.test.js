@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { createServer } = require('./server');
+const sessionTokens = new Map();
 
 async function withServer(run) {
   const server = createServer();
@@ -12,11 +13,11 @@ async function withServer(run) {
   finally { server.closeAllConnections(); await new Promise((resolve) => server.close(resolve)); }
 }
 
-async function openEvents(baseUrl, room, clientId, name) {
+async function openEvents(baseUrl, room, clientId, name, deviceId = `${clientId}-device`) {
   const controller = new AbortController();
-  const response = await fetch(`${baseUrl}/api/events?${new URLSearchParams({ room, clientId, name })}`, { signal: controller.signal });
+  const response = await fetch(`${baseUrl}/api/events?${new URLSearchParams({ room, clientId, deviceId, name })}`, { signal: controller.signal });
   assert.equal(response.status, 200);
-  return { controller, reader: response.body.getReader(), decoder: new TextDecoder(), buffer: '', queue: [] };
+  return { clientId, controller, reader: response.body.getReader(), decoder: new TextDecoder(), buffer: '', queue: [] };
 }
 
 async function nextEvent(session, predicate = () => true) {
@@ -24,6 +25,7 @@ async function nextEvent(session, predicate = () => true) {
   while (Date.now() < deadline) {
     while (session.queue.length) {
       const payload = session.queue.shift();
+      if (payload.type === 'hello' && payload.sessionToken) sessionTokens.set(session.clientId, payload.sessionToken);
       if (predicate(payload)) return payload;
     }
     const remaining = Math.max(1, deadline - Date.now());
@@ -43,8 +45,9 @@ async function nextEvent(session, predicate = () => true) {
 }
 
 async function post(baseUrl, path, body) {
+  const secured = { ...body, sessionToken: body.sessionToken || sessionTokens.get(body.clientId) };
   const response = await fetch(`${baseUrl}${path}`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(secured),
   });
   const data = await response.json();
   assert.ok(response.ok, data.error);
@@ -56,10 +59,10 @@ async function closeEvents(...sessions) {
   sessions.forEach((session) => session.controller.abort());
 }
 
-test('publica a versão 0.7 e os servidores ICE', async () => {
+test('publica a versão 0.8 e os servidores ICE', async () => {
   await withServer(async (baseUrl) => {
     const health = await fetch(`${baseUrl}/api/health`);
-    assert.deepEqual(await health.json(), { ok: true, name: 'Concord', version: '0.7.0' });
+    assert.deepEqual(await health.json(), { ok: true, name: 'Concord', version: '0.8.0' });
     assert.equal(health.headers.get('x-content-type-options'), 'nosniff');
     const ice = await (await fetch(`${baseUrl}/api/ice`)).json();
     assert.ok(ice.iceServers.some((server) => String(server.urls).includes('turn:')));
@@ -148,7 +151,7 @@ test('mantém texto e voz separados, encaminha sinais e sincroniza desenhos', as
     const denied = await fetch(`${baseUrl}/api/annotation`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        clientId: 'amigo-1', shareOwnerId: 'gabriel-1', action: 'item',
+        clientId: 'amigo-1', sessionToken: sessionTokens.get('amigo-1'), shareOwnerId: 'gabriel-1', action: 'item',
         item: { id: 'bloqueado-1', tool: 'text', text: 'não', x: .5, y: .5, color: '#ffffff', width: 4 },
       }),
     });
@@ -163,7 +166,7 @@ test('envia anexos temporários no chat e força download de arquivos arbitrári
   await withServer(async (baseUrl) => {
     const session = await openEvents(baseUrl, 'geral', 'arquivo-1', 'Gabriel');
     await nextEvent(session, (event) => event.type === 'hello');
-    const upload = await fetch(`${baseUrl}/api/upload?clientId=arquivo-1`, {
+    const upload = await fetch(`${baseUrl}/api/upload?${new URLSearchParams({ clientId: 'arquivo-1', sessionToken: sessionTokens.get('arquivo-1') })}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/zip', 'X-File-Name': encodeURIComponent('notas.zip') },
       body: 'arquivo seguro',
@@ -172,13 +175,14 @@ test('envia anexos temporários no chat e força download de arquivos arbitrári
     const attachment = (await upload.json()).attachment;
     await post(baseUrl, '/api/message', { clientId: 'arquivo-1', room: 'geral', text: '', attachments: [attachment.id] });
     const message = await nextEvent(session, (event) => event.type === 'message');
+    assert.equal(message.message.mine, true);
     assert.equal(message.message.attachments[0].name, 'notas.zip');
     const download = await fetch(`${baseUrl}${attachment.url}`);
     assert.equal(download.headers.get('content-type'), 'application/octet-stream');
     assert.match(download.headers.get('content-disposition'), /^attachment/);
     assert.equal(await download.text(), 'arquivo seguro');
 
-    const previewUpload = await fetch(`${baseUrl}/api/upload?clientId=arquivo-1`, {
+    const previewUpload = await fetch(`${baseUrl}/api/upload?${new URLSearchParams({ clientId: 'arquivo-1', sessionToken: sessionTokens.get('arquivo-1') })}`, {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain', 'X-File-Name': encodeURIComponent('leia.txt') },
       body: 'prévia dentro do Concord',
@@ -189,7 +193,25 @@ test('envia anexos temporários no chat e força download de arquivos arbitrári
     assert.match(preview.headers.get('content-disposition'), /^inline/);
     const forcedDownload = await fetch(`${baseUrl}${previewAttachment.url}?download=1`);
     assert.equal(forcedDownload.headers.get('content-type'), 'application/octet-stream');
+
+    await post(baseUrl, '/api/message-delete', { clientId: 'arquivo-1', room: 'geral', messageId: message.message.id });
+    const deleted = await nextEvent(session, (event) => event.type === 'message-deleted');
+    assert.equal(deleted.messageId, message.message.id);
+    assert.equal((await fetch(`${baseUrl}${attachment.url}`)).status, 404);
     await closeEvents(session);
+  });
+});
+
+test('mantém apenas uma guia ativa por instalação', async () => {
+  await withServer(async (baseUrl) => {
+    const first = await openEvents(baseUrl, 'geral', 'guia-1', 'Gabriel', 'instalacao-unica');
+    await nextEvent(first, (event) => event.type === 'hello');
+    const second = await openEvents(baseUrl, 'geral', 'guia-2', 'Gabriel', 'instalacao-unica');
+    const replaced = await nextEvent(first, (event) => event.type === 'tab-replaced');
+    assert.equal(replaced.type, 'tab-replaced');
+    const hello = await nextEvent(second, (event) => event.type === 'hello');
+    assert.equal(hello.self.id, 'guia-2');
+    await closeEvents(first, second);
   });
 });
 
@@ -205,4 +227,3 @@ test('preserva a chamada ao trocar o canal de texto', async () => {
     await closeEvents(first, second);
   });
 });
-

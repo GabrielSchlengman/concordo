@@ -33,19 +33,21 @@ Alguns navegadores só liberam câmera, microfone e compartilhamento de tela em 
 ## O que esta versão já faz
 
 - Canais de texto com histórico recente em memória.
+- Uma única guia ativa por instalação do navegador, evitando visitantes duplicados, eco e disputa pelo microfone sem usar identificação do hardware.
 - Envio de fotos, áudios, mensagens de voz e arquivos de até 8 MB por clique, colagem ou arrastar e soltar.
 - Imagens, vídeos, áudios, PDF e texto podem ser visualizados no Concord; todos os anexos têm opção de download.
+- Exclusão das próprias mensagens e anexos, rolagem livre do histórico e aviso de novas mensagens sem puxar a tela à força.
 - Lista de pessoas conectadas no texto e em cada canal de voz.
-- Áudio e vídeo via WebRTC com STUN/TURN, oferta inicial determinística, reprodução compatível, recuperação automática, renegociação e botão de reconexão. O modo normal escolhe a rota que funciona; a proteção rígida por retransmissão é opcional.
+- Áudio e vídeo via WebRTC com STUN/TURN, oferta inicial determinística, reprodução compatível, renegociação e botão de reconexão. O modo normal tenta a rota direta primeiro, passa para TURN após alguns segundos e encerra a tentativa com um erro claro; a proteção rígida por retransmissão é opcional.
 - Microfone, câmera, ensurdecimento do fone e volume geral ou individual.
 - Menu por participante no botão direito para silenciar, ajustar volume, esconder vídeo ou priorizar.
 - Compartilhamento de tela com preview local opcional.
 - Anotações sincronizadas por cima da tela compartilhada com caneta, borracha, texto, marcador de clique, desfazer e apagar tudo.
 - No aplicativo desktop, quem compartilha a tela inteira pode ver as marcações sobre a própria tela real, em uma camada transparente que não bloqueia cliques e é excluída da captura.
 - Controle do compartilhador para permitir ou bloquear anotações dos participantes.
-- Destaque automático de compartilhamentos, visualização em grade, modo foco e tela cheia.
-- Indicador visual de quem está falando e teste real de retorno do microfone.
-- Supressão de ruído, cancelamento de eco e controle de ganho aplicados às trilhas compatíveis.
+- Destaque automático de compartilhamentos e menu explicado de visualização com grade, foco, vídeos, visão própria, preview da tela e tela cheia.
+- Indicador visual de quem está falando, medidor ao vivo com linha de sensibilidade e teste real de retorno do microfone.
+- Supressão de ruído, cancelamento de eco e controle de ganho aplicados ao reabrir e substituir a trilha do microfone, com confirmação do estado oferecido pelo navegador.
 - Foto de perfil e configurações de entrada, saída, câmera e qualidade de transmissão.
 - Sons suaves e diferentes para entrada, saída, compartilhamento, microfone e fone.
 - Interface responsiva sem dependências externas.
@@ -65,4 +67,3 @@ Alguns navegadores só liberam câmera, microfone e compartilhamento de tela em 
 3. Reações, respostas e mensagens privadas.
 4. Infraestrutura de mídia SFU para chamadas maiores.
 5. Empacotamento desktop e notificações do sistema.
-

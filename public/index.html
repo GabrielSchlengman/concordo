@@ -68,11 +68,19 @@
           <div><strong id="call-title">Lobby</strong><small id="call-status">Preparando chamada…</small></div>
           <div class="call-toolbar-actions">
             <button id="reconnect-media" class="toolbar-button" title="Refazer a conexão de áudio e vídeo"><span data-icon="refresh"></span><span>Reconectar</span></button>
-            <button id="layout-button" class="toolbar-button" title="Alternar grade e foco"><span data-icon="grid"></span><span>Grade</span></button>
-            <button id="participant-video-button" class="toolbar-button active" title="Mostrar vídeos dos participantes"><span data-icon="video"></span><span>Vídeos</span></button>
-            <button id="self-view-button" class="toolbar-button active" title="Mostrar minha câmera"><span data-icon="eye"></span><span>Minha visão</span></button>
-            <button id="fullscreen-button" class="toolbar-button" title="Tela cheia"><span data-icon="fullscreen"></span><span>Tela cheia</span></button>
+            <button id="layout-button" class="toolbar-button" title="Opções de visualização"><span data-icon="grid"></span><span>Visualização</span></button>
           </div>
+        </div>
+
+        <div id="view-menu" class="view-menu hidden">
+          <header><strong>Visualização da chamada</strong><small>Escolha o que aparece para você.</small></header>
+          <button id="layout-grid" class="view-option"><span data-icon="grid"></span><span><strong>Grade</strong><small>Mostra todos os participantes lado a lado.</small></span></button>
+          <button id="layout-focus" class="view-option"><span data-icon="fullscreen"></span><span><strong>Foco</strong><small>Prioriza uma câmera ou tela compartilhada.</small></span></button>
+          <div class="view-menu-separator"></div>
+          <button id="participant-video-button" class="view-option active"><span data-icon="video"></span><span><strong>Vídeos dos participantes</strong><small>Ocultar não corta o áudio.</small></span></button>
+          <button id="self-view-button" class="view-option active"><span data-icon="eye"></span><span><strong>Minha câmera</strong><small>Mostra ou esconde sua própria imagem.</small></span></button>
+          <button id="screen-preview-button" class="view-option active"><span data-icon="screen"></span><span><strong>Preview da minha tela</strong><small>Mostra o que você está transmitindo.</small></span></button>
+          <button id="fullscreen-button" class="view-option"><span data-icon="fullscreen"></span><span><strong>Tela cheia</strong><small>Ocupa toda a tela com a chamada.</small></span></button>
         </div>
 
         <div id="video-grid" class="video-grid"></div>
@@ -117,6 +125,7 @@
 
       <section id="chat-area" class="chat-area">
         <div id="messages" class="messages" aria-live="polite"></div>
+        <button id="new-messages" class="new-messages hidden">Novas mensagens</button>
         <div id="attachment-tray" class="attachment-tray hidden"></div>
         <form id="message-form" class="composer">
           <button id="attach-button" type="button" class="composer-button" title="Enviar foto ou arquivo"><span data-icon="paperclip"></span></button>
@@ -172,11 +181,14 @@
           <label>Dispositivo de saída<select id="output-device"><option value="default">Padrão do sistema</option></select></label>
         </div>
         <label class="range-field">Volume geral dos outros <output id="master-volume-value">100%</output><input id="master-volume" type="range" min="0" max="200" value="100"></label>
-        <label class="range-field">Sensibilidade do indicador <output id="sensitivity-value">12%</output><input id="mic-sensitivity" type="range" min="2" max="45" value="12"></label>
+        <label class="range-field">Sensibilidade da fala <output id="sensitivity-value">12%</output><input id="mic-sensitivity" type="range" min="2" max="45" value="12"></label>
         <div class="test-card">
-          <div><strong>Teste do microfone</strong><p>Use fones para evitar eco. Durante o teste você ouvirá sua própria voz.</p></div>
+          <div><strong>Teste do microfone</strong><p>A barra reage à sua voz; a linha marca quando o Concord considera que você está falando. Use fones no retorno.</p></div>
           <button id="loopback-button" class="secondary-button"><span data-icon="mic"></span> Iniciar teste</button>
-          <div class="meter"><span id="settings-meter"></span></div>
+          <div class="sensitivity-meter" aria-label="Nível do microfone">
+            <span id="settings-meter"></span><i id="sensitivity-threshold"></i>
+          </div>
+          <div class="meter-labels"><small>Silêncio</small><strong id="mic-level-value">0%</strong><small>Falando</small></div>
           <audio id="mic-loopback-audio" autoplay></audio>
         </div>
         <h2>Processamento do microfone</h2>
@@ -217,4 +229,3 @@
   <script src="/app.js" defer></script>
 </body>
 </html>
-

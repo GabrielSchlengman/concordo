@@ -41,6 +41,10 @@ function cleanId(value, fallback = '') {
   return id || fallback;
 }
 
+function cleanToken(value) {
+  return String(value || '').trim().replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 128);
+}
+
 function cleanRoom(value, fallback = 'geral') {
   const roomId = cleanId(value, fallback);
   return TEXT_ROOMS.has(roomId) ? roomId : fallback;
@@ -79,6 +83,19 @@ function isInlineMime(mime) {
 
 function publicAttachment(file) {
   return { id: file.id, name: file.name, mime: file.mime, size: file.size, url: `/api/files/${file.id}` };
+}
+
+function publicMessage(message, client) {
+  return {
+    id: message.id,
+    clientId: message.clientId,
+    name: message.name,
+    avatar: message.avatar,
+    text: message.text,
+    attachments: message.attachments,
+    createdAt: message.createdAt,
+    mine: Boolean(client?.deviceId && message.ownerDeviceId === client.deviceId),
+  };
 }
 
 function pruneFiles() {
@@ -126,6 +143,12 @@ function broadcastTextRoom(roomId, payload, exceptId = null) {
   const room = getRoom(roomId);
   for (const [id, client] of room.clients) {
     if (id !== exceptId) writeSse(client.response, payload);
+  }
+}
+
+function broadcastMessage(roomId, message) {
+  for (const client of getRoom(roomId).clients.values()) {
+    writeSse(client.response, { type: 'message', message: publicMessage(message, client) });
   }
 }
 
@@ -281,24 +304,29 @@ function serveStatic(requestUrl, response) {
   });
 }
 
+function disconnectClientNow(clientId, response = null) {
+  const client = clients.get(clientId);
+  if (!client || (response && client.response !== response)) return;
+  const textRoom = client.textRoom;
+  const voiceRoom = client.voiceRoom;
+  clearTimeout(client.disconnectTimer);
+  getRoom(textRoom).clients.delete(clientId);
+  clients.delete(clientId);
+  if (voiceRoom) {
+    if (client.media?.screenSharing) broadcastVoiceRoom(voiceRoom, { type: 'annotation', action: 'clear', shareOwnerId: clientId, from: clientId }, clientId);
+    annotationItems.delete(clientId);
+    broadcastVoiceRoom(voiceRoom, { type: 'peer-left', id: clientId }, clientId);
+  }
+  sendTextPresence(textRoom);
+  sendVoiceState();
+}
+
 function scheduleDisconnect(clientId, response) {
   const client = clients.get(clientId);
   if (!client || client.response !== response) return;
   clearTimeout(client.disconnectTimer);
   client.disconnectTimer = setTimeout(() => {
-    const current = clients.get(clientId);
-    if (!current || current.response !== response) return;
-    const textRoom = current.textRoom;
-    const voiceRoom = current.voiceRoom;
-    getRoom(textRoom).clients.delete(clientId);
-    clients.delete(clientId);
-    if (voiceRoom) {
-      if (current.media?.screenSharing) broadcastVoiceRoom(voiceRoom, { type: 'annotation', action: 'clear', shareOwnerId: clientId, from: clientId }, clientId);
-      annotationItems.delete(clientId);
-      broadcastVoiceRoom(voiceRoom, { type: 'peer-left', id: clientId }, clientId);
-    }
-    sendTextPresence(textRoom);
-    sendVoiceState();
+    disconnectClientNow(clientId, response);
   }, RECONNECT_GRACE_MS);
   client.disconnectTimer.unref?.();
 }
@@ -379,7 +407,7 @@ function createServer() {
     }
 
     if (request.method === 'GET' && requestUrl.pathname === '/api/health') {
-      json(response, 200, { ok: true, name: 'Concord', version: '0.7.0' });
+      json(response, 200, { ok: true, name: 'Concord', version: '0.8.0' });
       return;
     }
 
@@ -396,10 +424,17 @@ function createServer() {
     if (request.method === 'GET' && requestUrl.pathname === '/api/events') {
       const textRoom = cleanRoom(requestUrl.searchParams.get('room'));
       const clientId = cleanId(requestUrl.searchParams.get('clientId'));
+      const deviceId = cleanId(requestUrl.searchParams.get('deviceId'));
       const name = cleanName(requestUrl.searchParams.get('name'));
-      if (!clientId) {
+      if (!clientId || !deviceId) {
         json(response, 400, { error: 'Cliente inválido' });
         return;
+      }
+      for (const [otherId, other] of [...clients]) {
+        if (otherId === clientId || other.deviceId !== deviceId) continue;
+        writeSse(other.response, { type: 'tab-replaced' });
+        other.response?.end();
+        disconnectClientNow(otherId);
       }
       const existing = clients.get(clientId);
       if (!existing && clients.size >= MAX_CLIENTS) {
@@ -429,11 +464,13 @@ function createServer() {
       }
       const client = existing || {
         id: clientId,
+        sessionToken: crypto.randomBytes(32).toString('base64url'),
         avatar: '',
         voiceRoom: null,
         media: cleanMediaState(),
       };
       client.name = name;
+      client.deviceId = deviceId;
       client.response = response;
       client.textRoom = textRoom;
       client.disconnectTimer = null;
@@ -443,10 +480,11 @@ function createServer() {
       writeSse(response, {
         type: 'hello',
         room: textRoom,
-        messages: nextRoom.messages,
+        messages: nextRoom.messages.map((message) => publicMessage(message, client)),
         users: usersForTextRoom(textRoom),
         voiceChannels: voiceChannelsState(),
         self: publicUser(client),
+        sessionToken: client.sessionToken,
       });
       sendTextPresence(previousTextRoom, textRoom);
       sendVoiceState();
@@ -465,7 +503,8 @@ function createServer() {
       if (isRateLimited(request)) { json(response, 429, { error: 'Muitos envios em pouco tempo. Aguarde um minuto.' }); return; }
       const clientId = cleanId(requestUrl.searchParams.get('clientId'));
       const client = clients.get(clientId);
-      if (!client) { json(response, 409, { error: 'Reconecte-se e tente novamente.' }); return; }
+      const sessionToken = cleanToken(request.headers['x-concord-session'] || requestUrl.searchParams.get('sessionToken'));
+      if (!client || sessionToken !== client.sessionToken) { json(response, 409, { error: 'Reconecte-se e tente novamente.' }); return; }
       const declaredSize = Number(request.headers['content-length']) || 0;
       if (declaredSize > MAX_UPLOAD_BYTES) { json(response, 413, { error: 'O arquivo ultrapassa o limite de 8 MB.' }); return; }
       try {
@@ -491,7 +530,7 @@ function createServer() {
         const body = await readJson(request);
         const clientId = cleanId(body.clientId);
         const client = clients.get(clientId);
-        if (!client) {
+        if (!client || cleanToken(body.sessionToken) !== client.sessionToken) {
           json(response, 409, { error: 'Reconecte-se e tente novamente.' });
           return;
         }
@@ -509,16 +548,36 @@ function createServer() {
           const message = {
             id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
             clientId,
+            ownerDeviceId: client.deviceId,
             name: client.name,
             avatar: client.avatar || '',
             text,
             attachments: attachments.map(publicAttachment),
+            attachmentIds: attachments.map((attachment) => attachment.id),
             createdAt: new Date().toISOString(),
           };
           room.messages.push(message);
           if (room.messages.length > 100) room.messages.shift();
-          broadcastTextRoom(roomId, { type: 'message', message });
+          broadcastMessage(roomId, message);
           json(response, 201, { ok: true });
+          return;
+        }
+
+        if (requestUrl.pathname === '/api/message-delete') {
+          const roomId = cleanRoom(body.room || client.textRoom);
+          const room = getRoom(roomId);
+          const messageId = cleanId(body.messageId);
+          const index = room.messages.findIndex((message) => message.id === messageId);
+          if (index < 0) { json(response, 404, { error: 'Mensagem não encontrada.' }); return; }
+          const message = room.messages[index];
+          if (message.ownerDeviceId !== client.deviceId) { json(response, 403, { error: 'Você só pode excluir suas próprias mensagens.' }); return; }
+          room.messages.splice(index, 1);
+          for (const attachmentId of message.attachmentIds || []) {
+            const file = files.get(attachmentId);
+            if (file) { files.delete(attachmentId); storedFileBytes -= file.size; }
+          }
+          broadcastTextRoom(roomId, { type: 'message-deleted', messageId });
+          json(response, 200, { ok: true });
           return;
         }
 
@@ -690,4 +749,3 @@ if (require.main === module) {
 }
 
 module.exports = { createServer };
-

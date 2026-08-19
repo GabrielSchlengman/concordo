@@ -67,14 +67,18 @@ function loadSettings() {
 
 const clientId = sessionStorage.getItem('concord-client-id') || sessionStorage.getItem('lume-client-id') || crypto.randomUUID();
 sessionStorage.setItem('concord-client-id', clientId);
+const deviceId = localStorage.getItem('concord-device-id') || crypto.randomUUID();
+localStorage.setItem('concord-device-id', deviceId);
+const tabId = sessionStorage.getItem('concord-tab-id') || crypto.randomUUID();
+sessionStorage.setItem('concord-tab-id', tabId);
 
 const state = {
-  clientId,
+  clientId, deviceId, tabId, sessionToken: '', tabActive: false, tabHeartbeat: null, tabStandbyTimer: null,
   name: localStorage.getItem('concord-name') || localStorage.getItem('lume-name') || 'Visitante',
   avatar: localStorage.getItem('concord-avatar') || '',
   textRoom: 'geral', voiceRoom: null, eventSource: null,
   textUsers: [], voiceChannels: { lobby: [], jogos: [], musica: [] }, callUsers: [],
-  settings: loadSettings(), peers: new Map(), iceServers: [], iceRelayReady: false, iceRelayReliable: false, relayProvider: '',
+  settings: loadSettings(), peers: new Map(), iceServers: [], stunServers: [], relayServers: [], iceRelayReady: false, iceRelayReliable: false, relayProvider: '',
   audioStream: null, cameraStream: null, screenStream: null,
   micEnabled: true, deafened: false, annotationsEnabled: true,
   audioContext: null, audioMonitors: new Map(), voiceFrame: null,
@@ -84,16 +88,16 @@ const state = {
   annotationPanelOpen: false, annotations: new Map(), ownAnnotationIds: [], pendingAvatar: null,
   knownCallUsers: new Map(), callRosterReady: false,
   pendingFiles: [], recorder: null, recordingStream: null, recordingStartedAt: 0, recordingTimer: null,
-  desktopOverlayAvailable: false, mediaWarningAt: 0,
+  desktopOverlayAvailable: false, mediaWarningAt: 0, unreadMessages: 0,
 };
 
 const IDS = [
-  'room-title','chat-area','messages','message-form','message-input','attachment-tray','attach-button','file-input','record-audio','recording-time','member-count','member-list','toggle-member-list',
-  'call-stage','call-title','call-status','video-grid','reconnect-media','layout-button','participant-video-button','self-view-button','fullscreen-button',
+  'room-title','chat-area','messages','new-messages','message-form','message-input','attachment-tray','attach-button','file-input','record-audio','recording-time','member-count','member-list','toggle-member-list',
+  'call-stage','call-title','call-status','video-grid','reconnect-media','layout-button','view-menu','layout-grid','layout-focus','participant-video-button','self-view-button','screen-preview-button','fullscreen-button',
   'annotation-toolbar','annotation-target','close-annotation','draw-size','undo-drawing','clear-drawings','annotation-permission-row','allow-annotations','annotation-help','call-mic','call-deafen','call-camera','call-screen','call-draw','leave-call',
   'connection-panel','connected-room','disconnect-voice','profile-button','profile-avatar','profile-fallback','self-name','self-status','bar-mic','bar-deafen','open-settings',
   'settings-overlay','close-settings','settings-avatar','settings-avatar-fallback','settings-name-display','display-name','avatar-input','remove-avatar','save-profile','profile-feedback',
-  'input-device','output-device','master-volume','master-volume-value','mic-sensitivity','sensitivity-value','loopback-button','settings-meter','mic-loopback-audio',
+  'input-device','output-device','master-volume','master-volume-value','mic-sensitivity','sensitivity-value','loopback-button','settings-meter','sensitivity-threshold','mic-level-value','mic-loopback-audio',
   'noise-suppression','noise-status','echo-cancellation','echo-status','auto-gain','gain-status','protect-ip','call-sounds','sound-volume','sound-volume-value','desktop-overlay','desktop-overlay-status',
   'setting-participant-video','setting-self-view','setting-screen-preview','setting-annotations','setting-auto-focus','camera-device','camera-quality','screen-quality','accent-color','compact-mode',
   'context-menu','toast-stack',
@@ -127,7 +131,7 @@ function toast(message, kind = '') {
 async function api(path, body = {}) {
   const response = await fetch(path, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ clientId: state.clientId, room: state.textRoom, ...body }),
+    body: JSON.stringify({ clientId: state.clientId, sessionToken: state.sessionToken, room: state.textRoom, ...body }),
   });
   const result = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(result.error || 'Não foi possível concluir essa ação.');
@@ -177,16 +181,75 @@ async function postMediaState() {
   catch (error) { console.warn(error); }
 }
 
+const ACTIVE_TAB_KEY = 'concord-active-tab';
+const DEV_MULTITAB = ['localhost', '127.0.0.1', '::1'].includes(location.hostname) && new URLSearchParams(location.search).has('multi');
+
+function readActiveTab() {
+  try { return JSON.parse(localStorage.getItem(ACTIVE_TAB_KEY) || 'null'); } catch { return null; }
+}
+
+function writeActiveTab() {
+  localStorage.setItem(ACTIVE_TAB_KEY, JSON.stringify({ tabId: state.tabId, expiresAt: Date.now() + 6000 }));
+}
+
+function tabStandbyOverlay() {
+  let overlay = document.getElementById('tab-standby-overlay');
+  if (overlay) return overlay;
+  overlay = document.createElement('div'); overlay.id = 'tab-standby-overlay'; overlay.className = 'tab-standby-overlay hidden';
+  const card = document.createElement('section'); card.className = 'tab-standby-card';
+  const logo = document.createElement('div'); logo.className = 'tab-standby-logo'; logo.textContent = 'C';
+  const title = document.createElement('h2'); title.textContent = 'O Concord já está aberto em outra guia';
+  const copy = document.createElement('p'); copy.textContent = 'Só uma guia por navegador fica conectada à chamada. Isso evita visitantes duplicados, eco e câmera presa.';
+  const button = document.createElement('button'); button.className = 'primary-button'; button.textContent = 'Usar o Concord nesta guia';
+  button.addEventListener('click', () => activateTab(true));
+  card.append(logo, title, copy, button); overlay.append(card); document.body.append(overlay); return overlay;
+}
+
+function stopLocalSessionForStandby() {
+  state.eventSource?.close(); state.eventSource = null; state.sessionToken = '';
+  state.voiceRoom = null; state.callUsers = [];
+  closeAllPeers(); stopLoopback(); stopCamera(); stopScreen(false);
+  state.audioStream?.getTracks().forEach((track) => track.stop()); state.audioStream = null;
+  state.audioMonitors.clear(); state.speaking.clear();
+  renderCall(); renderVoiceChannels(); updateControlStates();
+}
+
+function enterTabStandby() {
+  state.tabActive = false; clearInterval(state.tabHeartbeat); state.tabHeartbeat = null;
+  stopLocalSessionForStandby(); tabStandbyOverlay().classList.remove('hidden');
+  clearInterval(state.tabStandbyTimer);
+  state.tabStandbyTimer = setInterval(() => {
+    const owner = readActiveTab();
+    if (!owner || owner.expiresAt < Date.now()) activateTab(false);
+  }, 2200);
+}
+
+async function activateTab(force = false) {
+  if (state.tabActive) return;
+  if (!DEV_MULTITAB) {
+    const owner = readActiveTab();
+    if (!force && owner && owner.tabId !== state.tabId && owner.expiresAt > Date.now()) { enterTabStandby(); return; }
+    writeActiveTab();
+    const verified = readActiveTab();
+    if (verified?.tabId !== state.tabId) { enterTabStandby(); return; }
+  }
+  clearInterval(state.tabStandbyTimer); state.tabStandbyTimer = null;
+  state.tabActive = true; tabStandbyOverlay().classList.add('hidden');
+  if (!DEV_MULTITAB) state.tabHeartbeat = setInterval(writeActiveTab, 2000);
+  await loadIceServers(); connectEvents();
+}
+
 function connectEvents() {
+  if (!state.tabActive) return;
   state.eventSource?.close();
-  const query = new URLSearchParams({ room: state.textRoom, clientId: state.clientId, name: state.name });
+  const queryDeviceId = DEV_MULTITAB ? `${state.deviceId}-${state.tabId}` : state.deviceId;
+  const query = new URLSearchParams({ room: state.textRoom, clientId: state.clientId, deviceId: queryDeviceId, name: state.name });
   const source = new EventSource(`/api/events?${query}`);
   state.eventSource = source;
   document.querySelector('.status-dot').style.background = '#ffd166';
 
   source.onopen = () => {
     document.querySelector('.status-dot').style.background = 'var(--green)';
-    api('/api/profile', { name: state.name, avatar: state.avatar }).catch(() => {});
   };
   source.onerror = () => {
     document.querySelector('.status-dot').style.background = 'var(--red)';
@@ -196,6 +259,8 @@ function connectEvents() {
     let payload;
     try { payload = JSON.parse(event.data); } catch { return; }
     if (payload.type === 'hello') {
+      state.sessionToken = String(payload.sessionToken || '');
+      api('/api/profile', { name: state.name, avatar: state.avatar }).catch(() => {});
       renderMessages(payload.messages || []);
       state.textUsers = payload.users || [];
       state.voiceChannels = payload.voiceChannels || state.voiceChannels;
@@ -218,6 +283,10 @@ function connectEvents() {
       if (payload.room === state.voiceRoom) syncCallUsers(payload.users || []);
     } else if (payload.type === 'message') {
       appendMessage(payload.message);
+    } else if (payload.type === 'message-deleted') {
+      removeMessageFromView(payload.messageId);
+    } else if (payload.type === 'tab-replaced') {
+      enterTabStandby();
     } else if (payload.type === 'signal') {
       await handleSignal(payload.from, payload.data);
     } else if (payload.type === 'peer-left') {
@@ -240,11 +309,12 @@ function switchTextRoom(roomId) {
   el.roomTitle.textContent = CHANNELS[roomId];
   el.messageInput.placeholder = `Conversar em #${CHANNELS[roomId]}`;
   el.messages.innerHTML = '<div class="empty-state"><div>Carregando o canal…</div></div>';
-  connectEvents();
+  if (state.tabActive) connectEvents();
 }
 
 function renderMessages(messages) {
   el.messages.replaceChildren();
+  state.unreadMessages = 0; updateNewMessagesButton();
   if (!messages.length) {
     const empty = document.createElement('div');
     empty.className = 'empty-state';
@@ -254,20 +324,47 @@ function renderMessages(messages) {
     box.append(strong, document.createTextNode('Este é o começo do canal.'));
     empty.append(box); el.messages.append(empty); return;
   }
-  messages.forEach(appendMessage);
+  messages.forEach((message) => appendMessage(message, true));
   el.messages.scrollTop = el.messages.scrollHeight;
 }
 
-function appendMessage(message) {
+function isNearMessageBottom() {
+  return el.messages.scrollHeight - el.messages.scrollTop - el.messages.clientHeight < 90;
+}
+
+function updateNewMessagesButton() {
+  el.newMessages.classList.toggle('hidden', state.unreadMessages < 1);
+  el.newMessages.textContent = state.unreadMessages === 1 ? '1 nova mensagem' : `${state.unreadMessages} novas mensagens`;
+}
+
+function removeMessageFromView(messageId) {
+  el.messages.querySelector(`[data-message-id="${CSS.escape(String(messageId || ''))}"]`)?.remove();
+  if (!el.messages.querySelector('.message')) renderMessages([]);
+}
+
+async function deleteMessage(messageId) {
+  if (!confirm('Excluir esta mensagem para todos?')) return;
+  try { await api('/api/message-delete', { messageId }); }
+  catch (error) { toast(error.message, 'error'); }
+}
+
+function appendMessage(message, initial = false) {
+  const shouldFollow = initial || isNearMessageBottom() || message.mine;
   el.messages.querySelector('.empty-state')?.remove();
   const row = document.createElement('article');
-  row.className = 'message';
+  row.className = `message${message.mine ? ' own-message' : ''}`;
+  row.dataset.messageId = message.id;
   row.append(avatarNode(message));
   const head = document.createElement('div'); head.className = 'message-head';
   const author = document.createElement('strong'); author.textContent = message.name || 'Visitante';
   const time = document.createElement('time');
   time.textContent = new Date(message.createdAt || Date.now()).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
   head.append(author, time);
+  if (message.mine) {
+    const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'message-delete';
+    remove.title = 'Excluir mensagem'; remove.ariaLabel = 'Excluir mensagem'; remove.innerHTML = iconSvg('trash');
+    remove.addEventListener('click', () => deleteMessage(message.id)); head.append(remove);
+  }
   const body = document.createElement('div'); body.className = 'message-body'; body.textContent = message.text;
   row.append(head, body);
   if (Array.isArray(message.attachments) && message.attachments.length) {
@@ -276,7 +373,10 @@ function appendMessage(message) {
     row.append(attachments);
   }
   el.messages.append(row);
-  el.messages.scrollTop = el.messages.scrollHeight;
+  if (shouldFollow) {
+    el.messages.scrollTop = el.messages.scrollHeight; state.unreadMessages = 0;
+  } else state.unreadMessages += 1;
+  updateNewMessagesButton();
 }
 
 function formatBytes(size) {
@@ -380,7 +480,7 @@ async function uploadPendingFile(pending) {
   pending.uploading = true; renderPendingFiles();
   const query = new URLSearchParams({ clientId: state.clientId });
   const response = await fetch(`/api/upload?${query}`, {
-    method: 'POST', headers: { 'Content-Type': pending.file.type || 'application/octet-stream', 'X-File-Name': encodeURIComponent(pending.file.name) }, body: pending.file,
+    method: 'POST', headers: { 'Content-Type': pending.file.type || 'application/octet-stream', 'X-File-Name': encodeURIComponent(pending.file.name), 'X-Concord-Session': state.sessionToken }, body: pending.file,
   });
   const result = await response.json().catch(() => ({})); pending.uploading = false;
   if (!response.ok) throw new Error(result.error || `Falha ao enviar ${pending.file.name}.`);
@@ -483,11 +583,18 @@ async function loadIceServers() {
     const response = await fetch('/api/ice', { cache: 'no-store' });
     const data = await response.json();
     state.iceServers = Array.isArray(data.iceServers) ? data.iceServers : [];
+    const onlyUrls = (entry, predicate) => {
+      const urls = (Array.isArray(entry.urls) ? entry.urls : [entry.urls]).filter((url) => predicate(String(url)));
+      return urls.length ? [{ ...entry, urls: urls.length === 1 ? urls[0] : urls }] : [];
+    };
+    state.stunServers = state.iceServers.flatMap((entry) => onlyUrls(entry, (url) => url.startsWith('stun:')));
+    state.relayServers = state.iceServers.flatMap((entry) => onlyUrls(entry, (url) => url.startsWith('turn:') || url.startsWith('turns:')));
     state.iceRelayReady = data.relayReady === true;
     state.iceRelayReliable = data.relayReliable === true;
     state.relayProvider = String(data.relayProvider || '');
   } catch {
     state.iceServers = [{ urls: 'stun:stun.l.google.com:19302' }];
+    state.stunServers = [...state.iceServers]; state.relayServers = [];
     state.iceRelayReady = false; state.iceRelayReliable = false; state.relayProvider = '';
   }
 }
@@ -650,15 +757,17 @@ function updateCallConnectionStatus() {
   const total = Math.max(1, state.callUsers.length);
   const remoteCount = state.callUsers.filter((user) => user.id !== state.clientId).length;
   const connectedCount = [...state.peers.values()].filter((peer) => peer.pc.connectionState === 'connected').length;
+  const failedCount = [...state.peers.values()].filter((peer) => peer.timedOut).length;
   if (!remoteCount) el.callStatus.textContent = `${total} na chamada`;
   else if (connectedCount === remoteCount) el.callStatus.textContent = `${total} na chamada · mídia conectada${state.settings.protectIp ? ' · IP protegido' : ''}`;
+  else if (failedCount) el.callStatus.textContent = `${total} na chamada · não foi possível abrir a mídia · tente Reconectar`;
   else el.callStatus.textContent = `${total} na chamada · conectando áudio e vídeo…`;
 }
 
 function createPeer(userId) {
   if (!state.voiceRoom || userId === state.clientId || state.peers.has(userId)) return state.peers.get(userId);
   const pc = new RTCPeerConnection({
-    iceServers: state.iceServers,
+    iceServers: state.settings.protectIp ? state.iceServers : state.stunServers,
     iceCandidatePoolSize: 10,
     iceTransportPolicy: state.settings.protectIp ? 'relay' : 'all',
   });
@@ -667,8 +776,8 @@ function createPeer(userId) {
     initiator: state.clientId.localeCompare(userId) < 0,
     makingOffer: false, ignoreOffer: false, settingRemoteAnswer: false,
     pendingCandidates: [], remoteStreams: new Map(), description: {},
-    audioNodes: [], reconnectAttempts: 0, disconnectTimer: null, connectTimer: null,
-    negotiationQueued: false, recovering: false,
+    audioNodes: [], reconnectAttempts: 0, disconnectTimer: null, relayTimer: null, timeoutTimer: null,
+    negotiationQueued: false, recovering: false, relayEscalated: state.settings.protectIp, timedOut: false,
   };
   state.peers.set(userId, peer);
   addLocalTracks(peer);
@@ -681,7 +790,7 @@ function createPeer(userId) {
   pc.onconnectionstatechange = () => {
     const status = pc.connectionState;
     if (status === 'connected') {
-      peer.reconnectAttempts = 0; clearTimeout(peer.disconnectTimer); clearTimeout(peer.connectTimer);
+      peer.reconnectAttempts = 0; peer.timedOut = false; clearTimeout(peer.disconnectTimer); clearTimeout(peer.relayTimer); clearTimeout(peer.timeoutTimer);
       updateCallConnectionStatus();
     } else if (status === 'failed') {
       recoverPeer(peer);
@@ -693,7 +802,7 @@ function createPeer(userId) {
     }
     renderVideoGrid();
   };
-  schedulePeerWatchdog(peer);
+  schedulePeerStages(peer);
   announceMediaDescription(userId);
   return peer;
 }
@@ -716,35 +825,44 @@ async function negotiatePeer(peer, { iceRestart = false } = {}) {
   }
 }
 
-function schedulePeerWatchdog(peer) {
-  clearTimeout(peer.connectTimer);
-  peer.connectTimer = setTimeout(() => {
-    if (state.peers.get(peer.id) === peer && !['connected', 'closed'].includes(peer.pc.connectionState)) recoverPeer(peer);
-  }, 9000);
+function schedulePeerStages(peer) {
+  clearTimeout(peer.relayTimer); clearTimeout(peer.timeoutTimer);
+  if (!peer.relayEscalated && state.relayServers.length) {
+    peer.relayTimer = setTimeout(() => escalatePeerToRelay(peer), 6000);
+  }
+  peer.timeoutTimer = setTimeout(() => {
+    if (state.peers.get(peer.id) !== peer || ['connected', 'closed'].includes(peer.pc.connectionState)) return;
+    peer.timedOut = true; peer.recovering = false; updateCallConnectionStatus(); renderVideoGrid();
+    if (Date.now() - state.mediaWarningAt > 20_000) {
+      state.mediaWarningAt = Date.now();
+      toast(state.relayServers.length ? 'A rede não concluiu a mídia. Use Reconectar para tentar de novo.' : 'A conexão direta falhou e não há uma retransmissão TURN confiável configurada.', 'error');
+    }
+  }, 18_000);
+}
+
+async function escalatePeerToRelay(peer, notifyRemote = true) {
+  if (!state.peers.has(peer.id) || peer.relayEscalated || !state.relayServers.length) return;
+  peer.relayEscalated = true;
+  peer.pc.setConfiguration({ iceServers: state.iceServers, iceTransportPolicy: state.settings.protectIp ? 'relay' : 'all' });
+  el.callStatus.textContent = `${Math.max(1, state.callUsers.length)} na chamada · tentando rota alternativa…`;
+  if (notifyRemote) await sendSignal(peer.id, { enableRelay: true }).catch(() => {});
+  if (peer.initiator) await negotiatePeer(peer, { iceRestart: true });
 }
 
 async function recoverPeer(peer) {
   if (!state.peers.has(peer.id) || !state.voiceRoom || peer.recovering) return;
   peer.recovering = true;
-  peer.reconnectAttempts += 1;
+  schedulePeerStages(peer);
   el.callStatus.textContent = `${Math.max(1, state.callUsers.length)} na chamada · recuperando áudio e vídeo…`;
-  if (peer.reconnectAttempts <= 2) {
-    try {
+  try {
+    if (!peer.relayEscalated && state.relayServers.length) await escalatePeerToRelay(peer);
+    else if (!peer.reconnectAttempts) {
+      peer.reconnectAttempts = 1;
       if (peer.initiator) await negotiatePeer(peer, { iceRestart: true });
       else await sendSignal(peer.id, { restartRequest: true });
-      schedulePeerWatchdog(peer);
-    } catch (error) { console.warn('reinício ICE', error); }
-    finally { peer.recovering = false; }
-    return;
-  }
-  removePeer(peer.id);
-  if (Date.now() - state.mediaWarningAt > 25_000) {
-    state.mediaWarningAt = Date.now();
-    toast(state.iceRelayReliable
-      ? 'A rede bloqueou a mídia. Clique em Reconectar e tente novamente.'
-      : 'A rota externa de mídia está limitada. O áudio/vídeo pode não abrir entre redes diferentes.', 'error');
-  }
-  setTimeout(() => { if (state.callUsers.some((user) => user.id === peer.id)) createPeer(peer.id); }, 700);
+    }
+  } catch (error) { console.warn('reinício ICE', error); }
+  finally { peer.recovering = false; }
 }
 
 async function sendSignal(target, data) {
@@ -764,6 +882,10 @@ async function handleSignal(from, data) {
     }
     if (data.restartRequest) {
       if (peer.initiator) await negotiatePeer(peer, { iceRestart: true });
+      return;
+    }
+    if (data.enableRelay) {
+      await escalatePeerToRelay(peer, false);
       return;
     }
     if (data.description) {
@@ -874,7 +996,7 @@ function applyRemoteAudio(userId = null) {
 
 function removePeer(userId) {
   const peer = state.peers.get(userId); if (!peer) return;
-  clearTimeout(peer.disconnectTimer); clearTimeout(peer.connectTimer);
+  clearTimeout(peer.disconnectTimer); clearTimeout(peer.relayTimer); clearTimeout(peer.timeoutTimer);
   peer.audioNodes.forEach((node) => {
     try { node.source?.disconnect(); node.gain?.disconnect(); } catch { /* já removido */ }
     node.audio.srcObject = null; node.audio.remove();
@@ -1038,7 +1160,8 @@ function makeVideoTile({ key, user, stream, screen = false, local = false, hidde
   }
   const fallback = document.createElement('div'); fallback.className = 'tile-fallback';
   if (!local && connectionState !== 'connected') {
-    const waiting = document.createElement('div'); waiting.className = 'screen-wait'; waiting.innerHTML = `${iconSvg(screen ? 'screen' : 'refresh')}<strong>Abrindo áudio e vídeo…</strong><small>A conexão de mídia ainda não foi concluída.</small>`;
+    const failed = connectionState === 'failed';
+    const waiting = document.createElement('div'); waiting.className = 'screen-wait'; waiting.innerHTML = `${iconSvg(failed ? 'refresh' : (screen ? 'screen' : 'refresh'))}<strong>${failed ? 'Não foi possível conectar' : 'Abrindo áudio e vídeo…'}</strong><small>${failed ? 'A tentativa terminou. Você pode tentar novamente.' : 'A conexão de mídia ainda não foi concluída.'}</small>`;
     const retry = document.createElement('button'); retry.className = 'toolbar-button'; retry.innerHTML = `${iconSvg('refresh')}<span>Reconectar</span>`; retry.addEventListener('click', (event) => { event.stopPropagation(); rebuildPeerConnections(); }); waiting.append(retry); fallback.append(waiting);
   } else if (screen && !stream) {
     const waiting = document.createElement('div'); waiting.className = 'screen-wait'; waiting.innerHTML = `${iconSvg('screen')}<strong>Conectando à tela…</strong><small>O Concord está recuperando a transmissão.</small>`; fallback.append(waiting);
@@ -1080,10 +1203,10 @@ function renderVideoGrid() {
     const streams = remoteVideoStreams(peer, user);
     const preference = userPreference(user.id);
     if (state.settings.participantVideo) {
-      tiles.push(makeVideoTile({ key: `camera-${user.id}`, user, stream: streams.camera, hiddenVideo: preference.hideVideo, connectionState: peer.pc.connectionState }));
+      tiles.push(makeVideoTile({ key: `camera-${user.id}`, user, stream: streams.camera, hiddenVideo: preference.hideVideo, connectionState: peer.timedOut ? 'failed' : peer.pc.connectionState }));
     }
     if (user.media?.screenSharing || streams.screen) {
-      tiles.push(makeVideoTile({ key: `screen-${user.id}`, user, stream: streams.screen, screen: true, connectionState: peer.pc.connectionState }));
+      tiles.push(makeVideoTile({ key: `screen-${user.id}`, user, stream: streams.screen, screen: true, connectionState: peer.timedOut ? 'failed' : peer.pc.connectionState }));
       if (state.settings.autoFocus && !state.pinnedUserId) { state.layout = 'focus'; state.autoFocusedShareId = user.id; }
     }
   }
@@ -1105,7 +1228,8 @@ function applyLayoutState() {
     chosen?.classList.add('focused');
   }
   el.layoutButton.classList.toggle('active', state.layout === 'focus');
-  el.layoutButton.querySelector('span:last-child').textContent = state.layout === 'focus' ? 'Foco' : 'Grade';
+  el.layoutGrid.classList.toggle('active', state.layout === 'grid');
+  el.layoutFocus.classList.toggle('active', state.layout === 'focus');
 }
 
 function focusUser(userId) {
@@ -1344,7 +1468,11 @@ function startVoiceMeterLoop() {
       const speaking = level >= state.settings.sensitivity && (userId !== state.clientId || state.micEnabled);
       const changed = speaking !== state.speaking.has(userId);
       if (speaking) state.speaking.add(userId); else state.speaking.delete(userId);
-      if (userId === state.clientId) el.settingsMeter.style.width = `${level}%`;
+      if (userId === state.clientId) {
+        el.settingsMeter.style.width = `${level}%`;
+        el.micLevelValue.textContent = `${Math.round(level)}%`;
+        el.settingsMeter.parentElement.classList.toggle('speaking', speaking);
+      }
       if (changed) {
         document.querySelectorAll(`[data-user-id="${CSS.escape(userId)}"]`).forEach((node) => node.classList.toggle('speaking', speaking));
       }
@@ -1373,9 +1501,13 @@ function updateProcessingStatus(track = state.audioStream?.getAudioTracks()[0]) 
 async function applyAudioProcessing() {
   const track = state.audioStream?.getAudioTracks()[0];
   if (!track) { updateProcessingStatus(); return; }
-  try { await track.applyConstraints(audioConstraints()); }
-  catch { toast('Seu microfone não aceitou uma das opções de processamento.', 'error'); }
-  updateProcessingStatus(track);
+  try {
+    await ensureMicrophone(true);
+    toast('Processamento aplicado ao microfone.');
+  } catch {
+    toast('Seu microfone não aceitou uma das opções de processamento.', 'error');
+    updateProcessingStatus(track);
+  }
 }
 
 async function refreshDevices() {
@@ -1447,6 +1579,9 @@ function updateControlStates() {
   updateAnnotationPanel();
   el.participantVideoButton.classList.toggle('active', state.settings.participantVideo);
   el.selfViewButton.classList.toggle('active', state.settings.selfView);
+  el.screenPreviewButton.classList.toggle('active', state.settings.screenPreview);
+  el.layoutGrid.classList.toggle('active', state.layout === 'grid');
+  el.layoutFocus.classList.toggle('active', state.layout === 'focus');
 }
 
 function openSettings(tab = 'account') {
@@ -1464,6 +1599,7 @@ function selectSettingsTab(tab) {
 function syncSettingsControls() {
   el.masterVolume.value = state.settings.masterVolume; el.masterVolumeValue.value = `${state.settings.masterVolume}%`;
   el.micSensitivity.value = state.settings.sensitivity; el.sensitivityValue.value = `${state.settings.sensitivity}%`;
+  el.sensitivityThreshold.style.left = `${state.settings.sensitivity}%`;
   el.noiseSuppression.checked = state.settings.noiseSuppression; el.echoCancellation.checked = state.settings.echoCancellation; el.autoGain.checked = state.settings.autoGainControl;
   el.settingParticipantVideo.checked = state.settings.participantVideo; el.settingSelfView.checked = state.settings.selfView;
   el.settingScreenPreview.checked = state.settings.screenPreview; el.settingAnnotations.checked = state.settings.annotations; el.settingAutoFocus.checked = state.settings.autoFocus;
@@ -1539,6 +1675,14 @@ document.querySelectorAll('[data-text-room]').forEach((button) => button.addEven
 document.querySelectorAll('[data-voice-room]').forEach((button) => button.addEventListener('click', () => joinCall(button.dataset.voiceRoom)));
 
 el.messageForm.addEventListener('submit', async (event) => { event.preventDefault(); await sendCurrentMessage(); });
+el.messages.addEventListener('scroll', () => {
+  if (!isNearMessageBottom()) return;
+  state.unreadMessages = 0; updateNewMessagesButton();
+});
+el.newMessages.addEventListener('click', () => {
+  el.messages.scrollTo({ top: el.messages.scrollHeight, behavior: 'smooth' });
+  state.unreadMessages = 0; updateNewMessagesButton();
+});
 el.messageInput.addEventListener('input', () => { el.messageInput.style.height = 'auto'; el.messageInput.style.height = `${Math.min(140, el.messageInput.scrollHeight)}px`; });
 el.messageInput.addEventListener('keydown', (event) => {
   if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); el.messageForm.requestSubmit(); }
@@ -1562,7 +1706,16 @@ el.messageInput.addEventListener('paste', (event) => {
 el.callCamera.addEventListener('click', toggleCamera); el.callScreen.addEventListener('click', toggleScreen); el.callDraw.addEventListener('click', toggleAnnotationPanel);
 el.reconnectMedia.addEventListener('click', rebuildPeerConnections);
 el.leaveCall.addEventListener('click', leaveCall); el.disconnectVoice.addEventListener('click', leaveCall);
-el.layoutButton.addEventListener('click', toggleLayout);
+el.layoutButton.addEventListener('click', (event) => {
+  event.stopPropagation(); el.viewMenu.classList.toggle('hidden');
+});
+el.layoutGrid.addEventListener('click', () => {
+  state.layout = 'grid'; state.pinnedUserId = null; state.autoFocusedShareId = null;
+  applyLayoutState(); el.viewMenu.classList.add('hidden');
+});
+el.layoutFocus.addEventListener('click', () => {
+  state.layout = 'focus'; applyLayoutState(); el.viewMenu.classList.add('hidden');
+});
 el.fullscreenButton.addEventListener('click', async () => {
   try { if (document.fullscreenElement) await document.exitFullscreen(); else await el.callStage.requestFullscreen(); } catch { toast('Tela cheia não foi liberada pelo navegador.', 'error'); }
 });
@@ -1571,6 +1724,9 @@ el.participantVideoButton.addEventListener('click', () => {
 });
 el.selfViewButton.addEventListener('click', () => {
   state.settings.selfView = !state.settings.selfView; saveSettings(); syncSettingsControls(); updateControlStates(); renderVideoGrid();
+});
+el.screenPreviewButton.addEventListener('click', () => {
+  state.settings.screenPreview = !state.settings.screenPreview; saveSettings(); syncSettingsControls(); updateControlStates(); renderVideoGrid();
 });
 el.toggleMemberList.addEventListener('click', () => {
   document.body.classList.toggle('member-panel-hidden'); el.toggleMemberList.classList.toggle('active', !document.body.classList.contains('member-panel-hidden'));
@@ -1595,6 +1751,7 @@ document.querySelectorAll('[data-settings-tab]').forEach((button) => button.addE
 document.addEventListener('keydown', (event) => {
   if (event.key !== 'Escape') return;
   hideContextMenu();
+  el.viewMenu.classList.add('hidden');
   if (!el.settingsOverlay.classList.contains('hidden')) closeSettings();
   else if (state.annotationPanelOpen) closeAnnotationPanel();
 });
@@ -1608,7 +1765,8 @@ el.masterVolume.addEventListener('input', () => {
   saveSettings(); applyRemoteAudio(); el.micLoopbackAudio.volume = Math.min(1, state.settings.masterVolume / 100);
 });
 el.micSensitivity.addEventListener('input', () => {
-  state.settings.sensitivity = Number(el.micSensitivity.value); el.sensitivityValue.value = `${state.settings.sensitivity}%`; saveSettings();
+  state.settings.sensitivity = Number(el.micSensitivity.value); el.sensitivityValue.value = `${state.settings.sensitivity}%`;
+  el.sensitivityThreshold.style.left = `${state.settings.sensitivity}%`; saveSettings();
 });
 el.inputDevice.addEventListener('change', async () => {
   state.settings.microphoneId = el.inputDevice.value; saveSettings();
@@ -1642,7 +1800,11 @@ el.desktopOverlay.addEventListener('change', async () => {
 const processSettings = [
   [el.noiseSuppression, 'noiseSuppression'], [el.echoCancellation, 'echoCancellation'], [el.autoGain, 'autoGainControl'],
 ];
-processSettings.forEach(([control, key]) => control.addEventListener('change', () => { state.settings[key] = control.checked; saveSettings(); applyAudioProcessing(); }));
+processSettings.forEach(([control, key]) => control.addEventListener('change', async () => {
+  state.settings[key] = control.checked; saveSettings();
+  processSettings.forEach(([item]) => { item.disabled = true; });
+  try { await applyAudioProcessing(); } finally { processSettings.forEach(([item]) => { item.disabled = false; }); }
+}));
 
 const visualSettings = [
   [el.settingParticipantVideo, 'participantVideo'], [el.settingSelfView, 'selfView'], [el.settingScreenPreview, 'screenPreview'],
@@ -1667,6 +1829,7 @@ document.addEventListener('contextmenu', (event) => {
 document.addEventListener('pointerdown', (event) => {
   getAudioContext();
   if (!event.target.closest('#context-menu')) hideContextMenu();
+  if (!event.target.closest('#view-menu') && !event.target.closest('#layout-button')) el.viewMenu.classList.add('hidden');
   for (const peer of state.peers.values()) for (const node of peer.audioNodes) if (!node.gain) node.audio.play().catch(() => {});
 });
 window.addEventListener('resize', () => {
@@ -1674,8 +1837,17 @@ window.addEventListener('resize', () => {
 });
 document.addEventListener('fullscreenchange', () => el.fullscreenButton.classList.toggle('active', Boolean(document.fullscreenElement)));
 navigator.mediaDevices?.addEventListener?.('devicechange', refreshDevices);
+window.addEventListener('storage', (event) => {
+  if (DEV_MULTITAB || event.key !== ACTIVE_TAB_KEY || !state.tabActive) return;
+  const owner = readActiveTab();
+  if (owner?.tabId !== state.tabId && owner?.expiresAt > Date.now()) enterTabStandby();
+});
+window.addEventListener('beforeunload', () => {
+  if (DEV_MULTITAB) return;
+  const owner = readActiveTab();
+  if (owner?.tabId === state.tabId) localStorage.removeItem(ACTIVE_TAB_KEY);
+});
 
 applyAppearance(); syncSettingsControls(); updateSelfUI(); updateControlStates(); updateProcessingStatus();
 state.annotationsEnabled = state.settings.annotations;
-loadIceServers().finally(connectEvents);
-
+activateTab(false);
