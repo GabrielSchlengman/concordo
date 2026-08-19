@@ -59,10 +59,10 @@ async function closeEvents(...sessions) {
   sessions.forEach((session) => session.controller.abort());
 }
 
-test('publica o Alpendre 1.0.0 sem credenciais TURN compartilhadas', async () => {
+test('publica o Alpendre 1.1.0 sem credenciais TURN compartilhadas', async () => {
   await withServer(async (baseUrl) => {
     const health = await fetch(`${baseUrl}/api/health`);
-    assert.deepEqual(await health.json(), { ok: true, name: 'Alpendre', version: '1.0.0' });
+    assert.deepEqual(await health.json(), { ok: true, name: 'Alpendre', version: '1.1.0' });
     assert.equal(health.headers.get('x-content-type-options'), 'nosniff');
     assert.match(health.headers.get('content-security-policy'), /frame-src 'self'/);
     assert.doesNotMatch(health.headers.get('content-security-policy'), /meet\.jit\.si/);
@@ -83,9 +83,10 @@ test('entrega a interface real sem os botões fictícios antigos', async () => {
     assert.match(html, /Proteção rígida de IP/);
     assert.match(html, /Gravar mensagem de voz/);
     assert.match(html, /Anotações por cima da minha tela/);
-    assert.match(html, /Marcar onde clicar/);
+    assert.doesNotMatch(html, /Marcar onde clicar/);
+    assert.match(html, /alpendre-chimp-a\.png/);
     assert.match(html, /Chamada dentro do Alpendre/);
-    assert.match(html, /Espaços públicos/);
+    assert.match(html, /Servidores disponíveis/);
     assert.match(html, /Código do convite/);
     assert.doesNotMatch(html, /jitsi-container|Abrir chamada agora/);
     assert.doesNotMatch(html, /Adicionar servidor|Anexar arquivo/);
@@ -105,24 +106,39 @@ test('integra a chamada WebRTC dentro do app e mantém a camada segura do deskto
   assert.doesNotMatch(main, /JITSI_ORIGIN|createCallWindow/);
   assert.match(main, /setIgnoreMouseEvents\(true/);
   assert.match(main, /setContentProtection\(true\)/);
-  assert.match(overlay, /item\.tool === 'pointer'/);
+  assert.doesNotMatch(overlay, /item\.tool === 'pointer'/);
+  assert.match(app, /remove-many/);
 });
 
 test('cria espaços públicos e privados e isola chamadas entre eles', async () => {
   await withServer(async (baseUrl) => {
+    const owner = await openEvents(baseUrl, 'geral', 'espaco-admin', 'Admin', 'admin-device');
+    await nextEvent(owner, (event) => event.type === 'hello');
     const create = async (name, visibility) => {
-      const response = await fetch(`${baseUrl}/api/spaces`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, visibility }),
-      });
-      assert.equal(response.status, 201);
-      return (await response.json()).space;
+      return (await post(baseUrl, '/api/spaces', { clientId: 'espaco-admin', name, visibility })).space;
     };
     const publicSpace = await create('Varanda pública', 'public');
     const privateSpace = await create('Turma privada', 'private');
     const directory = await (await fetch(`${baseUrl}/api/spaces`)).json();
     assert.ok(directory.spaces.some((space) => space.id === publicSpace.id));
     assert.ok(!directory.spaces.some((space) => space.id === privateSpace.id));
-    assert.equal((await (await fetch(`${baseUrl}/api/space?id=${privateSpace.id}`)).json()).space.visibility, 'private');
+    const ownerQuery = new URLSearchParams({ id: privateSpace.id, clientId: 'espaco-admin', sessionToken: sessionTokens.get('espaco-admin') });
+    const privateView = (await (await fetch(`${baseUrl}/api/space?${ownerQuery}`)).json()).space;
+    assert.equal(privateView.visibility, 'private');
+    assert.equal(privateView.role, 'owner');
+    assert.match(privateView.inviteCode, /^ALP-[A-F0-9]{8}$/);
+
+    const inviteeDefault = await openEvents(baseUrl, 'geral', 'convidado-1', 'Convidado', 'convidado-device');
+    await nextEvent(inviteeDefault, (event) => event.type === 'hello');
+    const joinedPrivate = await post(baseUrl, '/api/space-join', { clientId: 'convidado-1', code: privateView.inviteCode });
+    assert.equal(joinedPrivate.space.role, 'member');
+    const invitee = await openEvents(baseUrl, 'geral', 'convidado-1', 'Convidado', 'convidado-device', privateSpace.id);
+    await nextEvent(invitee, (event) => event.type === 'hello');
+    const renamed = await post(baseUrl, '/api/channel-update', { clientId: 'espaco-admin', spaceId: privateSpace.id, kind: 'voice', channelId: 'lobby', name: 'Resenha' });
+    assert.equal(renamed.space.channels.voice.lobby, 'Resenha');
+    await post(baseUrl, '/api/space-action', { clientId: 'espaco-admin', spaceId: privateSpace.id, action: 'kick', targetClientId: 'convidado-1' });
+    const blockedPrivate = await fetch(`${baseUrl}/api/space?${new URLSearchParams({ id: privateSpace.id, clientId: 'convidado-1', sessionToken: sessionTokens.get('convidado-1') })}`);
+    assert.equal(blockedPrivate.status, 404);
 
     const defaultUser = await openEvents(baseUrl, 'geral', 'espaco-a', 'Pessoa A');
     const otherUser = await openEvents(baseUrl, 'geral', 'espaco-b', 'Pessoa B', 'espaco-b-device', publicSpace.id);
@@ -135,7 +151,7 @@ test('cria espaços públicos e privados e isola chamadas entre eles', async () 
       body: JSON.stringify({ clientId: 'espaco-a', sessionToken: sessionTokens.get('espaco-a'), target: 'espaco-b', data: { candidate: null } }),
     });
     assert.equal(blocked.status, 409);
-    await closeEvents(defaultUser, otherUser);
+    await closeEvents(owner, inviteeDefault, invitee, defaultUser, otherUser);
   });
 });
 
@@ -164,18 +180,21 @@ test('mantém texto e voz separados, encaminha sinais e sincroniza desenhos', as
     });
     await nextEvent(amigo, (event) => event.type === 'call-state' && event.users.find((user) => user.id === 'gabriel-1')?.media.screenSharing);
     await post(baseUrl, '/api/annotation', {
+      clientId: 'gabriel-1', shareOwnerId: 'gabriel-1', action: 'item',
+      item: { id: 'dono-1', tool: 'pen', color: '#5dd6ff', width: 3, points: [{ x: .2, y: .2 }, { x: .3, y: .3 }] },
+    });
+    await post(baseUrl, '/api/annotation', {
       clientId: 'amigo-1', shareOwnerId: 'gabriel-1', action: 'item',
       item: { id: 'traco-1', tool: 'pen', color: '#ff5d8f', width: 3, points: [{ x: .1, y: .2 }, { x: .8, y: .7 }] },
     });
-    const drawing = await nextEvent(gabriel, (event) => event.type === 'annotation' && event.action === 'item');
+    const drawing = await nextEvent(gabriel, (event) => event.type === 'annotation' && event.item?.id === 'traco-1');
     assert.equal(drawing.item.id, 'traco-1');
     assert.equal(drawing.from, 'amigo-1');
-    await post(baseUrl, '/api/annotation', {
-      clientId: 'amigo-1', shareOwnerId: 'gabriel-1', action: 'item',
-      item: { id: 'clique-1', tool: 'pointer', x: .45, y: .55, color: '#ffd166', width: 4 },
+    const pointer = await fetch(`${baseUrl}/api/annotation`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ clientId: 'amigo-1', sessionToken: sessionTokens.get('amigo-1'), shareOwnerId: 'gabriel-1', action: 'item', item: { id: 'clique-1', tool: 'pointer', x: .45, y: .55 } }),
     });
-    const pointer = await nextEvent(gabriel, (event) => event.type === 'annotation' && event.item?.id === 'clique-1');
-    assert.equal(pointer.item.tool, 'pointer');
+    assert.equal(pointer.status, 400);
     await post(baseUrl, '/api/annotation', {
       clientId: 'amigo-1', shareOwnerId: 'gabriel-1', action: 'item',
       item: { id: 'texto-1', tool: 'text', text: 'clique aqui', x: .5, y: .6, color: '#ffffff', width: 4 },
@@ -186,8 +205,13 @@ test('mantém texto e voz separados, encaminha sinais e sincroniza desenhos', as
     const atrasado = await openEvents(baseUrl, 'cafe', 'atrasado-1', 'Atrasado');
     await nextEvent(atrasado, (event) => event.type === 'hello');
     const joined = await post(baseUrl, '/api/call', { clientId: 'atrasado-1', action: 'join', voiceRoom: 'lobby', media: { micEnabled: true } });
-    assert.equal(joined.annotations[0].items[0].id, 'traco-1');
+    assert.equal(joined.annotations[0].items[0].id, 'dono-1');
     assert.equal(joined.annotations[0].items.length, 3);
+    assert.equal(joined.annotations[0].items.find((item) => item.id === 'traco-1').authorId, 'amigo-1');
+
+    await post(baseUrl, '/api/annotation', { clientId: 'amigo-1', shareOwnerId: 'gabriel-1', action: 'clear' });
+    const removedOwn = await nextEvent(gabriel, (event) => event.type === 'annotation' && event.action === 'remove-many');
+    assert.deepEqual(new Set(removedOwn.itemIds), new Set(['traco-1', 'texto-1']));
 
     await post(baseUrl, '/api/media-state', {
       clientId: 'gabriel-1', media: { micEnabled: true, screenSharing: true, annotationsEnabled: false },
