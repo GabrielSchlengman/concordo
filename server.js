@@ -106,8 +106,10 @@ function isSpaceMember(space, client) {
 }
 
 function canAccessSpace(space, client, deviceId = client?.deviceId) {
-  if (!space || !deviceId || space.banned.has(deviceId)) return false;
-  return space.visibility === 'public' || space.id === DEFAULT_SPACE_ID || space.members.has(deviceId);
+  if (!space) return false;
+  if (deviceId && space.banned.has(deviceId)) return false;
+  if (space.visibility === 'public' || space.id === DEFAULT_SPACE_ID) return true;
+  return Boolean(deviceId && space.members.has(deviceId));
 }
 
 function spaceRole(space, client) {
@@ -145,6 +147,13 @@ function publicSpaces(viewer = null) {
 function clientFromQuery(requestUrl) {
   const client = clients.get(cleanId(requestUrl.searchParams.get('clientId')));
   return client && cleanToken(requestUrl.searchParams.get('sessionToken')) === client.sessionToken ? client : null;
+}
+
+function viewerFromQuery(requestUrl) {
+  const client = clientFromQuery(requestUrl);
+  if (client) return client;
+  const deviceId = cleanId(requestUrl.searchParams.get('deviceId'));
+  return deviceId ? { deviceId } : null;
 }
 
 function cleanRoom(value, fallback = 'geral') {
@@ -515,18 +524,18 @@ function createServer() {
     }
 
     if (request.method === 'GET' && requestUrl.pathname === '/api/health') {
-      json(response, 200, { ok: true, name: 'Alpendre', version: '1.1.0' });
+      json(response, 200, { ok: true, name: 'Alpendre', version: '1.1.1' });
       return;
     }
 
     if (request.method === 'GET' && requestUrl.pathname === '/api/spaces') {
-      json(response, 200, { spaces: publicSpaces(clientFromQuery(requestUrl)) });
+      json(response, 200, { spaces: publicSpaces(viewerFromQuery(requestUrl)) });
       return;
     }
 
     if (request.method === 'GET' && requestUrl.pathname === '/api/space') {
       const space = spaces.get(cleanSpaceId(requestUrl.searchParams.get('id')));
-      const viewer = clientFromQuery(requestUrl);
+      const viewer = viewerFromQuery(requestUrl);
       if (!space || !canAccessSpace(space, viewer)) json(response, 404, { error: 'Este espaço não existe ou você não tem acesso.' });
       else json(response, 200, { space: publicSpace(space, viewer) });
       return;

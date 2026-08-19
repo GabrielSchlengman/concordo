@@ -59,10 +59,10 @@ async function closeEvents(...sessions) {
   sessions.forEach((session) => session.controller.abort());
 }
 
-test('publica o Alpendre 1.1.0 sem credenciais TURN compartilhadas', async () => {
+test('publica o Alpendre 1.1.1 sem credenciais TURN compartilhadas', async () => {
   await withServer(async (baseUrl) => {
     const health = await fetch(`${baseUrl}/api/health`);
-    assert.deepEqual(await health.json(), { ok: true, name: 'Alpendre', version: '1.1.0' });
+    assert.deepEqual(await health.json(), { ok: true, name: 'Alpendre', version: '1.1.1' });
     assert.equal(health.headers.get('x-content-type-options'), 'nosniff');
     assert.match(health.headers.get('content-security-policy'), /frame-src 'self'/);
     assert.doesNotMatch(health.headers.get('content-security-policy'), /meet\.jit\.si/);
@@ -112,6 +112,12 @@ test('integra a chamada WebRTC dentro do app e mantém a camada segura do deskto
 
 test('cria espaços públicos e privados e isola chamadas entre eles', async () => {
   await withServer(async (baseUrl) => {
+    const defaultResponse = await fetch(`${baseUrl}/api/space?id=alpendre`);
+    const defaultSpace = (await defaultResponse.json()).space;
+    assert.equal(defaultResponse.status, 200);
+    assert.equal(defaultSpace.id, 'alpendre');
+    assert.equal(defaultSpace.visibility, 'public');
+
     const owner = await openEvents(baseUrl, 'geral', 'espaco-admin', 'Admin', 'admin-device');
     await nextEvent(owner, (event) => event.type === 'hello');
     const create = async (name, visibility) => {
@@ -122,6 +128,8 @@ test('cria espaços públicos e privados e isola chamadas entre eles', async () 
     const directory = await (await fetch(`${baseUrl}/api/spaces`)).json();
     assert.ok(directory.spaces.some((space) => space.id === publicSpace.id));
     assert.ok(!directory.spaces.some((space) => space.id === privateSpace.id));
+    const rememberedDirectory = await (await fetch(`${baseUrl}/api/spaces?deviceId=admin-device`)).json();
+    assert.ok(rememberedDirectory.spaces.some((space) => space.id === privateSpace.id && space.role === 'owner'));
     const ownerQuery = new URLSearchParams({ id: privateSpace.id, clientId: 'espaco-admin', sessionToken: sessionTokens.get('espaco-admin') });
     const privateView = (await (await fetch(`${baseUrl}/api/space?${ownerQuery}`)).json()).space;
     assert.equal(privateView.visibility, 'private');
@@ -151,6 +159,15 @@ test('cria espaços públicos e privados e isola chamadas entre eles', async () 
       body: JSON.stringify({ clientId: 'espaco-a', sessionToken: sessionTokens.get('espaco-a'), target: 'espaco-b', data: { candidate: null } }),
     });
     assert.equal(blocked.status, 409);
+
+    await post(baseUrl, '/api/space-action', { clientId: 'espaco-admin', spaceId: privateSpace.id, action: 'delete' });
+    assert.equal((await fetch(`${baseUrl}/api/space?id=${privateSpace.id}`)).status, 404);
+    const deleteDefault = await fetch(`${baseUrl}/api/space-action`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ clientId: 'espaco-admin', sessionToken: sessionTokens.get('espaco-admin'), spaceId: 'alpendre', action: 'delete' }),
+    });
+    assert.equal(deleteDefault.status, 403);
+    assert.equal((await fetch(`${baseUrl}/api/space?id=alpendre`)).status, 200);
     await closeEvents(owner, inviteeDefault, invitee, defaultUser, otherUser);
   });
 });
