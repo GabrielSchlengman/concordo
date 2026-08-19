@@ -13,9 +13,9 @@ async function withServer(run) {
   finally { server.closeAllConnections(); await new Promise((resolve) => server.close(resolve)); }
 }
 
-async function openEvents(baseUrl, room, clientId, name, deviceId = `${clientId}-device`) {
+async function openEvents(baseUrl, room, clientId, name, deviceId = `${clientId}-device`, space = 'alpendre') {
   const controller = new AbortController();
-  const response = await fetch(`${baseUrl}/api/events?${new URLSearchParams({ room, clientId, deviceId, name })}`, { signal: controller.signal });
+  const response = await fetch(`${baseUrl}/api/events?${new URLSearchParams({ space, room, clientId, deviceId, name })}`, { signal: controller.signal });
   assert.equal(response.status, 200);
   return { clientId, controller, reader: response.body.getReader(), decoder: new TextDecoder(), buffer: '', queue: [] };
 }
@@ -59,12 +59,13 @@ async function closeEvents(...sessions) {
   sessions.forEach((session) => session.controller.abort());
 }
 
-test('publica a versão 0.9.0 sem depender de um relay público compartilhado', async () => {
+test('publica o Alpendre 1.0.0 sem credenciais TURN compartilhadas', async () => {
   await withServer(async (baseUrl) => {
     const health = await fetch(`${baseUrl}/api/health`);
-    assert.deepEqual(await health.json(), { ok: true, name: 'Concord', version: '0.9.0' });
+    assert.deepEqual(await health.json(), { ok: true, name: 'Alpendre', version: '1.0.0' });
     assert.equal(health.headers.get('x-content-type-options'), 'nosniff');
-    assert.match(health.headers.get('content-security-policy'), /frame-src https:\/\/meet\.jit\.si/);
+    assert.match(health.headers.get('content-security-policy'), /frame-src 'self'/);
+    assert.doesNotMatch(health.headers.get('content-security-policy'), /meet\.jit\.si/);
     const ice = await (await fetch(`${baseUrl}/api/ice`)).json();
     assert.equal(ice.iceServers.some((server) => String(server.urls).includes('openrelay.metered.ca')), false);
     assert.equal(ice.relayReady, false);
@@ -75,7 +76,7 @@ test('publica a versão 0.9.0 sem depender de um relay público compartilhado', 
 test('entrega a interface real sem os botões fictícios antigos', async () => {
   await withServer(async (baseUrl) => {
     const html = await (await fetch(baseUrl)).text();
-    assert.match(html, /CONCORD/);
+    assert.match(html, /ALPENDRE/);
     assert.match(html, /Preview da minha tela/);
     assert.match(html, /Permitir desenhos/);
     assert.match(html, /Teste do microfone/);
@@ -83,25 +84,59 @@ test('entrega a interface real sem os botões fictícios antigos', async () => {
     assert.match(html, /Gravar mensagem de voz/);
     assert.match(html, /Anotações por cima da minha tela/);
     assert.match(html, /Marcar onde clicar/);
-    assert.match(html, /Chamada estável ativada/);
-    assert.match(html, /jitsi-container/);
+    assert.match(html, /Chamada dentro do Alpendre/);
+    assert.match(html, /Espaços públicos/);
+    assert.match(html, /Código do convite/);
+    assert.doesNotMatch(html, /jitsi-container|Abrir chamada agora/);
     assert.doesNotMatch(html, /Adicionar servidor|Anexar arquivo/);
   });
 });
 
-test('integra a chamada hospedada e mantém a camada segura do aplicativo', () => {
+test('integra a chamada WebRTC dentro do app e mantém a camada segura do desktop', () => {
   const app = fs.readFileSync(path.join(__dirname, 'public', 'app.js'), 'utf8');
   const main = fs.readFileSync(path.join(__dirname, 'electron', 'main.js'), 'utf8');
   const overlay = fs.readFileSync(path.join(__dirname, 'electron', 'annotation-overlay.js'), 'utf8');
   assert.match(app, /protectIp: false/);
   assert.match(app, /className = 'remote-call-audio'/);
-  assert.match(app, /JitsiMeetExternalAPI/);
-  assert.match(app, /toggleShareScreen/);
+  assert.match(app, /new RTCPeerConnection/);
+  assert.doesNotMatch(app, /jitsi|meet\.ffmuc/i);
+  assert.doesNotMatch(app, /window\.open\(/);
   assert.match(app, /startAnnotationOverlay/);
-  assert.match(main, /JITSI_ORIGIN/);
+  assert.doesNotMatch(main, /JITSI_ORIGIN|createCallWindow/);
   assert.match(main, /setIgnoreMouseEvents\(true/);
   assert.match(main, /setContentProtection\(true\)/);
   assert.match(overlay, /item\.tool === 'pointer'/);
+});
+
+test('cria espaços públicos e privados e isola chamadas entre eles', async () => {
+  await withServer(async (baseUrl) => {
+    const create = async (name, visibility) => {
+      const response = await fetch(`${baseUrl}/api/spaces`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, visibility }),
+      });
+      assert.equal(response.status, 201);
+      return (await response.json()).space;
+    };
+    const publicSpace = await create('Varanda pública', 'public');
+    const privateSpace = await create('Turma privada', 'private');
+    const directory = await (await fetch(`${baseUrl}/api/spaces`)).json();
+    assert.ok(directory.spaces.some((space) => space.id === publicSpace.id));
+    assert.ok(!directory.spaces.some((space) => space.id === privateSpace.id));
+    assert.equal((await (await fetch(`${baseUrl}/api/space?id=${privateSpace.id}`)).json()).space.visibility, 'private');
+
+    const defaultUser = await openEvents(baseUrl, 'geral', 'espaco-a', 'Pessoa A');
+    const otherUser = await openEvents(baseUrl, 'geral', 'espaco-b', 'Pessoa B', 'espaco-b-device', publicSpace.id);
+    await nextEvent(defaultUser, (event) => event.type === 'hello');
+    await nextEvent(otherUser, (event) => event.type === 'hello');
+    await post(baseUrl, '/api/call', { clientId: 'espaco-a', action: 'join', voiceRoom: 'lobby', media: { micEnabled: true } });
+    await post(baseUrl, '/api/call', { clientId: 'espaco-b', action: 'join', voiceRoom: 'lobby', media: { micEnabled: true } });
+    const blocked = await fetch(`${baseUrl}/api/signal`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ clientId: 'espaco-a', sessionToken: sessionTokens.get('espaco-a'), target: 'espaco-b', data: { candidate: null } }),
+    });
+    assert.equal(blocked.status, 409);
+    await closeEvents(defaultUser, otherUser);
+  });
 });
 
 test('mantém texto e voz separados, encaminha sinais e sincroniza desenhos', async () => {
@@ -113,9 +148,8 @@ test('mantém texto e voz separados, encaminha sinais e sincroniza desenhos', as
 
     const gabrielJoin = await post(baseUrl, '/api/call', { clientId: 'gabriel-1', action: 'join', voiceRoom: 'lobby', media: { micEnabled: true } });
     const amigoJoin = await post(baseUrl, '/api/call', { clientId: 'amigo-1', action: 'join', voiceRoom: 'lobby', media: { micEnabled: true } });
-    assert.equal(gabrielJoin.conference.provider, 'jitsi');
-    assert.equal(gabrielJoin.conference.domain, 'meet.jit.si');
-    assert.equal(gabrielJoin.conference.roomName, amigoJoin.conference.roomName);
+    assert.equal(gabrielJoin.conference.provider, 'direct');
+    assert.equal(amigoJoin.conference.provider, 'direct');
     const roster = await nextEvent(gabriel, (event) => event.type === 'call-state' && event.users.length === 2);
     assert.deepEqual(new Set(roster.users.map((user) => user.id)), new Set(['gabriel-1', 'amigo-1']));
     assert.equal(roster.users.find((user) => user.id === 'amigo-1').textRoom, 'projetos');
@@ -195,7 +229,7 @@ test('envia anexos temporários no chat e força download de arquivos arbitrári
     const previewUpload = await fetch(`${baseUrl}/api/upload?${new URLSearchParams({ clientId: 'arquivo-1', sessionToken: sessionTokens.get('arquivo-1') })}`, {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain', 'X-File-Name': encodeURIComponent('leia.txt') },
-      body: 'prévia dentro do Concord',
+      body: 'prévia dentro do Alpendre',
     });
     const previewAttachment = (await previewUpload.json()).attachment;
     const preview = await fetch(`${baseUrl}${previewAttachment.url}?preview=1`);

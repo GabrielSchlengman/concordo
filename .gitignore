@@ -4,4 +4,5 @@ dist/
 .runtime/
 *.log
 .DS_Store
-
+../Alpendre-desktop-build/
+../Alpendre-Desktop-Windows.zip

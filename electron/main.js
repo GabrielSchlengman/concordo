@@ -9,8 +9,7 @@ let activeDisplaySource = null;
 let annotationOverlay = null;
 let annotationOverlayState = { items: [] };
 const allowedSourceIds = new Map();
-const CLOUD_URL = process.env.CONCORD_SERVER_URL || process.env.LUME_SERVER_URL || 'https://lume-app-ym0d.onrender.com';
-const JITSI_ORIGIN = 'https://meet.jit.si';
+const CLOUD_URL = process.env.ALPENDRE_SERVER_URL || process.env.CONCORD_SERVER_URL || process.env.LUME_SERVER_URL || 'https://lume-app-ym0d.onrender.com';
 
 function isTrustedUrl(value) {
   try { return Boolean(appOrigin) && new URL(value).origin === appOrigin; }
@@ -18,10 +17,8 @@ function isTrustedUrl(value) {
 }
 
 function isTrustedMediaUrl(value) {
-  try {
-    const origin = new URL(value).origin;
-    return origin === appOrigin || origin === JITSI_ORIGIN;
-  } catch { return false; }
+  try { return new URL(value).origin === appOrigin; }
+  catch { return false; }
 }
 
 function isTrustedSender(event) {
@@ -177,7 +174,7 @@ function registerDesktopHandlers() {
 
 function createWindow(url) {
   const window = new BrowserWindow({
-    title: 'Concord',
+    title: 'Alpendre',
     width: 1440,
     height: 900,
     minWidth: 900,
@@ -185,7 +182,7 @@ function createWindow(url) {
     backgroundColor: '#12131a',
     show: false,
     autoHideMenuBar: true,
-    icon: path.join(__dirname, 'assets', 'concord.ico'),
+    icon: path.join(__dirname, 'assets', 'alpendre.ico'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -215,8 +212,8 @@ const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) app.quit();
 
 app.whenReady().then(async () => {
-  app.setAppUserModelId('com.concord.desktop');
-  const url = process.env.CONCORD_USE_LOCAL === '1' || process.env.LUME_USE_LOCAL === '1' ? await startLocalServer() : CLOUD_URL;
+  app.setAppUserModelId('com.alpendre.desktop');
+  const url = process.env.ALPENDRE_USE_LOCAL === '1' || process.env.CONCORD_USE_LOCAL === '1' || process.env.LUME_USE_LOCAL === '1' ? await startLocalServer() : CLOUD_URL;
   appOrigin = new URL(url).origin;
   configureMediaPermissions();
   registerDesktopHandlers();
@@ -226,7 +223,7 @@ app.whenReady().then(async () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow(url);
   });
 }).catch((error) => {
-  console.error('Não foi possível iniciar o Concord:', error);
+  console.error('Não foi possível iniciar o Alpendre:', error);
   app.quit();
 });
 

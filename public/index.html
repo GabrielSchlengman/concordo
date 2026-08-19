@@ -4,20 +4,21 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <meta name="theme-color" content="#17191f">
-  <title>Concord</title>
+  <title>Alpendre</title>
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
   <div id="app" class="app">
-    <aside class="brand-rail" aria-label="Concord">
-      <div class="brand-mark" title="Concord">C</div>
+    <aside class="brand-rail" aria-label="Alpendre">
+      <div class="brand-mark" title="Alpendre">A</div>
       <div class="rail-line"></div>
-      <button class="rail-room active" aria-label="Comunidade Concord">CO</button>
+      <div id="space-list" class="space-list"></div>
+      <button id="open-spaces" class="rail-room rail-add" aria-label="Explorar ou criar espaço" title="Explorar espaços">+</button>
     </aside>
 
     <aside class="sidebar">
       <header class="server-header">
-        <div><strong>CONCORD</strong><small>seu espaço</small></div>
+        <div><strong id="space-name">ALPENDRE</strong><small id="space-visibility">espaço público</small></div>
         <span class="status-dot" title="Conectado"></span>
       </header>
 
@@ -68,7 +69,6 @@
           <div><strong id="call-title">Lobby</strong><small id="call-status">Preparando chamada…</small></div>
           <div class="call-toolbar-actions">
             <button id="reconnect-media" class="toolbar-button" title="Reabrir a chamada"><span data-icon="refresh"></span><span>Reabrir</span></button>
-            <button id="jitsi-open-external" class="toolbar-button hidden" title="Iniciar a sala ou abrir a chamada em uma janela separada"><span data-icon="fullscreen"></span><span>Iniciar chamada</span></button>
             <button id="layout-button" class="toolbar-button" title="Opções de visualização"><span data-icon="grid"></span><span>Visualização</span></button>
           </div>
         </div>
@@ -82,15 +82,6 @@
           <button id="self-view-button" class="view-option active"><span data-icon="eye"></span><span><strong>Minha câmera</strong><small>Mostra ou esconde sua própria imagem.</small></span></button>
           <button id="screen-preview-button" class="view-option active"><span data-icon="screen"></span><span><strong>Preview da minha tela</strong><small>Mostra o que você está transmitindo.</small></span></button>
           <button id="fullscreen-button" class="view-option"><span data-icon="fullscreen"></span><span><strong>Tela cheia</strong><small>Ocupa toda a tela com a chamada.</small></span></button>
-        </div>
-
-        <div id="jitsi-call" class="jitsi-call hidden">
-          <div id="jitsi-container" class="jitsi-container"></div>
-          <div id="jitsi-loading" class="jitsi-loading">
-            <span class="jitsi-spinner"></span>
-            <strong>Preparando chamada estável…</strong>
-            <small>Áudio, câmera e tela serão abertos com segurança dentro do Concord.</small>
-          </div>
         </div>
 
         <div id="video-grid" class="video-grid"></div>
@@ -155,6 +146,16 @@
     </aside>
   </div>
 
+  <div id="spaces-overlay" class="spaces-overlay hidden" role="dialog" aria-modal="true" aria-label="Espaços do Alpendre">
+    <section class="spaces-card">
+      <header><div><h1>Seus alpendres</h1><p>Entre num espaço público ou crie um convite privado para sua turma.</p></div><button id="close-spaces" class="icon-button" aria-label="Fechar"><span data-icon="close"></span></button></header>
+      <div class="spaces-columns">
+        <section><h2>Espaços públicos</h2><div id="public-spaces" class="public-spaces"></div></section>
+        <section class="create-space"><h2>Criar um espaço</h2><label>Nome<input id="new-space-name" maxlength="40" placeholder="Ex.: Casa da galera"></label><label class="switch-row"><span><strong>Espaço privado</strong><small>Só entra quem tiver o código do convite.</small></span><input id="new-space-private" type="checkbox"><i></i></label><button id="create-space" class="primary-button">Criar espaço</button><div class="space-divider"><span>ou</span></div><label>Código do convite<input id="space-invite-code" maxlength="64" placeholder="priv-..."></label><button id="join-private-space" class="secondary-button">Entrar pelo código</button></section>
+      </div>
+    </section>
+  </div>
+
   <div id="settings-overlay" class="settings-overlay hidden" role="dialog" aria-modal="true" aria-label="Configurações">
     <aside class="settings-nav">
       <div class="settings-nav-inner">
@@ -172,7 +173,7 @@
         <h1>Minha conta</h1>
         <div class="account-card">
           <div class="avatar avatar-xl"><img id="settings-avatar" alt=""><span id="settings-avatar-fallback">EU</span></div>
-          <div><h2 id="settings-name-display">Visitante</h2><p>Sua identidade no Concord</p></div>
+          <div><h2 id="settings-name-display">Visitante</h2><p>Sua identidade no Alpendre</p></div>
         </div>
         <label class="field-label" for="display-name">Nome de exibição</label>
         <input id="display-name" maxlength="32" autocomplete="nickname">
@@ -186,7 +187,7 @@
 
       <div class="settings-page" data-settings-page="voice">
         <h1>Voz e áudio</h1>
-        <div class="stable-call-note"><strong>Chamada estável ativada</strong><p>O Concord agora usa a infraestrutura do Jitsi para evitar áudio cortado e tela preta entre redes diferentes. Para iniciar uma sala, a primeira pessoa clica em “Eu sou o anfitrião” e entra com Google; os amigos apenas aguardam e não precisam de conta.</p></div>
+        <div class="stable-call-note"><strong>Chamada dentro do Alpendre</strong><p>Áudio, vídeo e tela usam a conexão nativa do navegador. <span id="relay-status">Verificando a rota segura…</span></p></div>
         <div class="settings-grid two">
           <label>Dispositivo de entrada<select id="input-device"><option value="default">Padrão do sistema</option></select></label>
           <label>Dispositivo de saída<select id="output-device"><option value="default">Padrão do sistema</option></select></label>
@@ -194,7 +195,7 @@
         <label class="range-field">Volume geral dos outros <output id="master-volume-value">100%</output><input id="master-volume" type="range" min="0" max="200" value="100"></label>
         <label class="range-field">Sensibilidade da fala <output id="sensitivity-value">12%</output><input id="mic-sensitivity" type="range" min="2" max="45" value="12"></label>
         <div class="test-card">
-          <div><strong>Teste do microfone</strong><p>A barra reage à sua voz; a linha marca quando o Concord considera que você está falando. Use fones no retorno.</p></div>
+          <div><strong>Teste do microfone</strong><p>A barra reage à sua voz; a linha marca quando o Alpendre considera que você está falando. Use fones no retorno.</p></div>
           <button id="loopback-button" class="secondary-button"><span data-icon="mic"></span> Iniciar teste</button>
           <div class="sensitivity-meter" aria-label="Nível do microfone">
             <span id="settings-meter"></span><i id="sensitivity-threshold"></i>
@@ -214,7 +215,7 @@
 
       <div class="settings-page" data-settings-page="video">
         <h1>Vídeo e compartilhamento</h1>
-        <div class="stable-call-note"><strong>Controles dentro da chamada</strong><p>Use os botões que aparecem sobre a chamada para câmera, tela cheia, grade, compartilhamento e qualidade. As anotações antigas ficam desativadas neste modo para não encobrir a transmissão.</p></div>
+        <div class="stable-call-note"><strong>Controles dentro da chamada</strong><p>Use os botões sobre a chamada para câmera, tela cheia, grade, compartilhamento e anotações. Tudo continua dentro do Alpendre.</p></div>
         <label class="switch-row"><span><strong>Mostrar vídeos dos participantes</strong><small>Ocultar vídeo não corta o áudio.</small></span><input id="setting-participant-video" type="checkbox" checked><i></i></label>
         <label class="switch-row"><span><strong>Mostrar minha câmera</strong><small>Exibe ou esconde seu quadro local.</small></span><input id="setting-self-view" type="checkbox" checked><i></i></label>
         <label class="switch-row"><span><strong>Preview da minha tela</strong><small>Mostra localmente aquilo que você está compartilhando.</small></span><input id="setting-screen-preview" type="checkbox" checked><i></i></label>

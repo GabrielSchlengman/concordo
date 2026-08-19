@@ -14,7 +14,9 @@ const MAX_CLIENTS_PER_ROOM = 150;
 const RECONNECT_GRACE_MS = 8_000;
 const TEXT_ROOMS = new Set(['geral', 'projetos', 'cafe']);
 const VOICE_ROOMS = new Set(['lobby', 'jogos', 'musica']);
+const DEFAULT_SPACE_ID = 'alpendre';
 const rooms = new Map();
+const spaces = new Map();
 const clients = new Map();
 const requestWindows = new Map();
 const files = new Map();
@@ -22,25 +24,31 @@ const annotationItems = new Map();
 let storedFileBytes = 0;
 let turnCache = null;
 
-const requestedJitsiDomain = String(process.env.JITSI_DOMAIN || 'meet.jit.si')
-  .trim().toLowerCase().replace(/^https?:\/\//, '').split('/')[0];
-const JITSI_DOMAIN = /^[a-z0-9.-]+$/.test(requestedJitsiDomain) ? requestedJitsiDomain : 'meet.jit.si';
-const CONFERENCE_NAMESPACE = String(process.env.CONCORD_CONFERENCE_NAMESPACE || crypto.randomBytes(18).toString('hex'))
-  .replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64);
-const JITSI_ORIGIN = `https://${JITSI_DOMAIN}`;
+function resetRuntimeState() {
+  for (const client of clients.values()) clearTimeout(client.disconnectTimer);
+  rooms.clear(); clients.clear(); requestWindows.clear(); files.clear(); annotationItems.clear();
+  spaces.clear();
+  spaces.set(DEFAULT_SPACE_ID, { id: DEFAULT_SPACE_ID, name: 'Alpendre', visibility: 'public', createdAt: new Date().toISOString() });
+  storedFileBytes = 0;
+}
 
 const securityHeaders = {
-  'Content-Security-Policy': `default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' https: wss:; style-src 'self' 'unsafe-inline'; script-src 'self' ${JITSI_ORIGIN}; frame-src ${JITSI_ORIGIN}; frame-ancestors 'none'; base-uri 'self'; form-action 'self'`,
+  'Content-Security-Policy': "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' https: wss:; style-src 'self' 'unsafe-inline'; script-src 'self'; frame-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
   'Cross-Origin-Opener-Policy': 'same-origin',
-  'Permissions-Policy': `camera=(self "${JITSI_ORIGIN}"), microphone=(self "${JITSI_ORIGIN}"), display-capture=(self "${JITSI_ORIGIN}"), speaker-selection=(self "${JITSI_ORIGIN}")`,
+  'Permissions-Policy': 'camera=(self), microphone=(self), display-capture=(self), speaker-selection=(self)',
   'Referrer-Policy': 'no-referrer',
   'X-Content-Type-Options': 'nosniff',
   'X-Frame-Options': 'DENY',
 };
 
-function getRoom(roomId) {
-  if (!rooms.has(roomId)) rooms.set(roomId, { clients: new Map(), messages: [] });
-  return rooms.get(roomId);
+function roomKey(spaceId, roomId) {
+  return `${spaceId}:${roomId}`;
+}
+
+function getRoom(spaceId, roomId) {
+  const key = roomKey(spaceId, roomId);
+  if (!rooms.has(key)) rooms.set(key, { clients: new Map(), messages: [] });
+  return rooms.get(key);
 }
 
 function cleanId(value, fallback = '') {
@@ -50,6 +58,33 @@ function cleanId(value, fallback = '') {
 
 function cleanToken(value) {
   return String(value || '').trim().replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 128);
+}
+
+function cleanSpaceId(value, fallback = DEFAULT_SPACE_ID) {
+  const id = cleanId(value, fallback).toLowerCase();
+  return id || fallback;
+}
+
+function cleanSpaceName(value) {
+  return String(value || 'Novo espaço').trim().replace(/\s+/g, ' ').slice(0, 40) || 'Novo espaço';
+}
+
+function spaceSlug(name) {
+  const base = cleanSpaceName(name).normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 28) || 'espaco';
+  let id = base;
+  while (spaces.has(id)) id = `${base.slice(0, 21)}-${crypto.randomBytes(3).toString('hex')}`;
+  return id;
+}
+
+function publicSpace(space) {
+  let online = 0;
+  for (const client of clients.values()) if (client.spaceId === space.id) online += 1;
+  return { id: space.id, name: space.name, visibility: space.visibility, online, createdAt: space.createdAt };
+}
+
+function publicSpaces() {
+  return [...spaces.values()].filter((space) => space.visibility === 'public').map(publicSpace);
 }
 
 function cleanRoom(value, fallback = 'geral') {
@@ -64,11 +99,7 @@ function cleanVoiceRoom(value) {
 
 function conferenceConfig(voiceRoom) {
   if (!voiceRoom) return null;
-  return {
-    provider: 'jitsi',
-    domain: JITSI_DOMAIN,
-    roomName: `Concord-${CONFERENCE_NAMESPACE}-${voiceRoom}`,
-  };
+  return { provider: 'direct' };
 }
 
 function cleanName(value) {
@@ -145,6 +176,7 @@ function publicUser(client) {
     avatar: client.avatar || '',
     textRoom: client.textRoom,
     voiceRoom: client.voiceRoom,
+    spaceId: client.spaceId,
     inCall: Boolean(client.voiceRoom),
     media: cleanMediaState(client.media),
   };
@@ -155,23 +187,23 @@ function writeSse(response, payload) {
   response.write(`data: ${JSON.stringify(payload)}\n\n`);
 }
 
-function broadcastTextRoom(roomId, payload, exceptId = null) {
-  const room = getRoom(roomId);
+function broadcastTextRoom(spaceId, roomId, payload, exceptId = null) {
+  const room = getRoom(spaceId, roomId);
   for (const [id, client] of room.clients) {
     if (id !== exceptId) writeSse(client.response, payload);
   }
 }
 
-function broadcastMessage(roomId, message) {
-  for (const client of getRoom(roomId).clients.values()) {
+function broadcastMessage(spaceId, roomId, message) {
+  for (const client of getRoom(spaceId, roomId).clients.values()) {
     writeSse(client.response, { type: 'message', message: publicMessage(message, client) });
   }
 }
 
-function broadcastVoiceRoom(voiceRoom, payload, exceptId = null) {
+function broadcastVoiceRoom(spaceId, voiceRoom, payload, exceptId = null) {
   if (!voiceRoom) return;
   for (const [id, client] of clients) {
-    if (id !== exceptId && client.voiceRoom === voiceRoom) writeSse(client.response, payload);
+    if (id !== exceptId && client.spaceId === spaceId && client.voiceRoom === voiceRoom) writeSse(client.response, payload);
   }
 }
 
@@ -179,28 +211,29 @@ function broadcastAll(payload) {
   for (const client of clients.values()) writeSse(client.response, payload);
 }
 
-function usersForTextRoom(roomId) {
-  return [...getRoom(roomId).clients.values()].map(publicUser);
+function usersForTextRoom(spaceId, roomId) {
+  return [...getRoom(spaceId, roomId).clients.values()].map(publicUser);
 }
 
-function voiceChannelsState() {
+function voiceChannelsState(spaceId) {
   const channels = Object.fromEntries([...VOICE_ROOMS].map((roomId) => [roomId, []]));
   for (const client of clients.values()) {
-    if (client.voiceRoom && channels[client.voiceRoom]) channels[client.voiceRoom].push(publicUser(client));
+    if (client.spaceId === spaceId && client.voiceRoom && channels[client.voiceRoom]) channels[client.voiceRoom].push(publicUser(client));
   }
   return channels;
 }
 
-function sendTextPresence(...roomIds) {
+function sendTextPresence(spaceId, ...roomIds) {
   for (const roomId of new Set(roomIds.filter(Boolean))) {
-    broadcastTextRoom(roomId, { type: 'presence', users: usersForTextRoom(roomId) });
+    broadcastTextRoom(spaceId, roomId, { type: 'presence', users: usersForTextRoom(spaceId, roomId) });
   }
 }
 
-function sendVoiceState() {
-  const channels = voiceChannelsState();
-  broadcastAll({ type: 'voice-state', channels });
+function sendVoiceState(spaceId) {
+  const channels = voiceChannelsState(spaceId);
   for (const client of clients.values()) {
+    if (client.spaceId !== spaceId) continue;
+    writeSse(client.response, { type: 'voice-state', channels });
     if (!client.voiceRoom) continue;
     writeSse(client.response, {
       type: 'call-state',
@@ -325,16 +358,17 @@ function disconnectClientNow(clientId, response = null) {
   if (!client || (response && client.response !== response)) return;
   const textRoom = client.textRoom;
   const voiceRoom = client.voiceRoom;
+  const spaceId = client.spaceId;
   clearTimeout(client.disconnectTimer);
-  getRoom(textRoom).clients.delete(clientId);
+  getRoom(spaceId, textRoom).clients.delete(clientId);
   clients.delete(clientId);
   if (voiceRoom) {
-    if (client.media?.screenSharing) broadcastVoiceRoom(voiceRoom, { type: 'annotation', action: 'clear', shareOwnerId: clientId, from: clientId }, clientId);
+    if (client.media?.screenSharing) broadcastVoiceRoom(spaceId, voiceRoom, { type: 'annotation', action: 'clear', shareOwnerId: clientId, from: clientId }, clientId);
     annotationItems.delete(clientId);
-    broadcastVoiceRoom(voiceRoom, { type: 'peer-left', id: clientId }, clientId);
+    broadcastVoiceRoom(spaceId, voiceRoom, { type: 'peer-left', id: clientId }, clientId);
   }
-  sendTextPresence(textRoom);
-  sendVoiceState();
+  sendTextPresence(spaceId, textRoom);
+  sendVoiceState(spaceId);
 }
 
 function scheduleDisconnect(clientId, response) {
@@ -410,6 +444,7 @@ async function iceServers() {
 }
 
 function createServer() {
+  resetRuntimeState();
   return http.createServer(async (request, response) => {
     const requestUrl = new URL(request.url, `http://${request.headers.host || 'localhost'}`);
 
@@ -420,7 +455,35 @@ function createServer() {
     }
 
     if (request.method === 'GET' && requestUrl.pathname === '/api/health') {
-      json(response, 200, { ok: true, name: 'Concord', version: '0.9.0' });
+      json(response, 200, { ok: true, name: 'Alpendre', version: '1.0.0' });
+      return;
+    }
+
+    if (request.method === 'GET' && requestUrl.pathname === '/api/spaces') {
+      json(response, 200, { spaces: publicSpaces() });
+      return;
+    }
+
+    if (request.method === 'GET' && requestUrl.pathname === '/api/space') {
+      const space = spaces.get(cleanSpaceId(requestUrl.searchParams.get('id')));
+      if (!space) json(response, 404, { error: 'Este espaço não existe ou o convite expirou.' });
+      else json(response, 200, { space: publicSpace(space) });
+      return;
+    }
+
+    if (request.method === 'POST' && requestUrl.pathname === '/api/spaces') {
+      if (isRateLimited(request)) { json(response, 429, { error: 'Muitas criações em pouco tempo. Aguarde um minuto.' }); return; }
+      try {
+        const body = await readJson(request);
+        const visibility = body.visibility === 'private' ? 'private' : 'public';
+        const name = cleanSpaceName(body.name);
+        const id = visibility === 'private' ? `priv-${crypto.randomBytes(12).toString('hex')}` : spaceSlug(name);
+        const space = { id, name, visibility, createdAt: new Date().toISOString() };
+        spaces.set(id, space);
+        json(response, 201, { ok: true, space: publicSpace(space) });
+      } catch (error) {
+        json(response, 400, { error: error.message || 'Não foi possível criar o espaço.' });
+      }
       return;
     }
 
@@ -435,12 +498,14 @@ function createServer() {
     }
 
     if (request.method === 'GET' && requestUrl.pathname === '/api/events') {
+      const spaceId = cleanSpaceId(requestUrl.searchParams.get('space'));
+      const space = spaces.get(spaceId);
       const textRoom = cleanRoom(requestUrl.searchParams.get('room'));
       const clientId = cleanId(requestUrl.searchParams.get('clientId'));
       const deviceId = cleanId(requestUrl.searchParams.get('deviceId'));
       const name = cleanName(requestUrl.searchParams.get('name'));
-      if (!clientId || !deviceId) {
-        json(response, 400, { error: 'Cliente inválido' });
+      if (!space || !clientId || !deviceId) {
+        json(response, 400, { error: space ? 'Cliente inválido' : 'Este espaço não existe ou o convite expirou.' });
         return;
       }
       for (const [otherId, other] of [...clients]) {
@@ -451,10 +516,10 @@ function createServer() {
       }
       const existing = clients.get(clientId);
       if (!existing && clients.size >= MAX_CLIENTS) {
-        json(response, 503, { error: 'O Concord está cheio. Tente novamente em instantes.' });
+        json(response, 503, { error: 'O Alpendre está cheio. Tente novamente em instantes.' });
         return;
       }
-      const nextRoom = getRoom(textRoom);
+      const nextRoom = getRoom(spaceId, textRoom);
       if (!existing && nextRoom.clients.size >= MAX_CLIENTS_PER_ROOM) {
         json(response, 503, { error: 'Esta sala está cheia. Tente novamente em instantes.' });
         return;
@@ -470,10 +535,19 @@ function createServer() {
       response.write(': conectado\n\n');
 
       const previousTextRoom = existing?.textRoom;
+      const previousSpaceId = existing?.spaceId;
       if (existing) {
         clearTimeout(existing.disconnectTimer);
         if (existing.response && !existing.response.writableEnded) existing.response.end();
-        if (previousTextRoom && previousTextRoom !== textRoom) getRoom(previousTextRoom).clients.delete(clientId);
+        if (previousTextRoom && (previousTextRoom !== textRoom || previousSpaceId !== spaceId)) getRoom(previousSpaceId, previousTextRoom).clients.delete(clientId);
+        if (previousSpaceId && previousSpaceId !== spaceId && existing.voiceRoom) {
+          if (existing.media?.screenSharing) broadcastVoiceRoom(previousSpaceId, existing.voiceRoom, { type: 'annotation', action: 'clear', shareOwnerId: clientId, from: clientId }, clientId);
+          annotationItems.delete(clientId);
+          broadcastVoiceRoom(previousSpaceId, existing.voiceRoom, { type: 'peer-left', id: clientId }, clientId);
+          existing.voiceRoom = null;
+          existing.media = cleanMediaState();
+          sendVoiceState(previousSpaceId);
+        }
       }
       const client = existing || {
         id: clientId,
@@ -486,21 +560,24 @@ function createServer() {
       client.deviceId = deviceId;
       client.response = response;
       client.textRoom = textRoom;
+      client.spaceId = spaceId;
       client.disconnectTimer = null;
       clients.set(clientId, client);
       nextRoom.clients.set(clientId, client);
 
       writeSse(response, {
         type: 'hello',
+        space: publicSpace(space),
         room: textRoom,
         messages: nextRoom.messages.map((message) => publicMessage(message, client)),
-        users: usersForTextRoom(textRoom),
-        voiceChannels: voiceChannelsState(),
+        users: usersForTextRoom(spaceId, textRoom),
+        voiceChannels: voiceChannelsState(spaceId),
         self: publicUser(client),
         sessionToken: client.sessionToken,
       });
-      sendTextPresence(previousTextRoom, textRoom);
-      sendVoiceState();
+      if (previousSpaceId && previousSpaceId !== spaceId) sendTextPresence(previousSpaceId, previousTextRoom);
+      sendTextPresence(spaceId, textRoom);
+      sendVoiceState(spaceId);
 
       const heartbeat = setInterval(() => {
         if (!response.writableEnded) response.write(': ping\n\n');
@@ -516,7 +593,7 @@ function createServer() {
       if (isRateLimited(request)) { json(response, 429, { error: 'Muitos envios em pouco tempo. Aguarde um minuto.' }); return; }
       const clientId = cleanId(requestUrl.searchParams.get('clientId'));
       const client = clients.get(clientId);
-      const sessionToken = cleanToken(request.headers['x-concord-session'] || requestUrl.searchParams.get('sessionToken'));
+      const sessionToken = cleanToken(request.headers['x-alpendre-session'] || request.headers['x-concord-session'] || requestUrl.searchParams.get('sessionToken'));
       if (!client || sessionToken !== client.sessionToken) { json(response, 409, { error: 'Reconecte-se e tente novamente.' }); return; }
       const declaredSize = Number(request.headers['content-length']) || 0;
       if (declaredSize > MAX_UPLOAD_BYTES) { json(response, 413, { error: 'O arquivo ultrapassa o limite de 8 MB.' }); return; }
@@ -524,7 +601,7 @@ function createServer() {
         const data = await readBuffer(request);
         if (!data.length) { json(response, 400, { error: 'O arquivo está vazio.' }); return; }
         const file = {
-          id: crypto.randomBytes(18).toString('hex'), clientId, room: client.textRoom,
+          id: crypto.randomBytes(18).toString('hex'), clientId, spaceId: client.spaceId, room: client.textRoom,
           name: cleanFileName(request.headers['x-file-name']), mime: cleanMime(request.headers['content-type']),
           size: data.length, data, createdAt: Date.now(),
         };
@@ -552,12 +629,12 @@ function createServer() {
           const roomId = cleanRoom(body.room || client.textRoom);
           const text = String(body.text || '').trim().slice(0, 2000);
           const attachmentIds = Array.isArray(body.attachments) ? body.attachments.slice(0, MAX_ATTACHMENTS_PER_MESSAGE).map((id) => cleanId(id)) : [];
-          const attachments = attachmentIds.map((id) => files.get(id)).filter((file) => file?.clientId === clientId && file.room === roomId);
+          const attachments = attachmentIds.map((id) => files.get(id)).filter((file) => file?.clientId === clientId && file.spaceId === client.spaceId && file.room === roomId);
           if (!text && !attachments.length) {
             json(response, 400, { error: 'Mensagem vazia' });
             return;
           }
-          const room = getRoom(roomId);
+          const room = getRoom(client.spaceId, roomId);
           const message = {
             id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
             clientId,
@@ -571,14 +648,14 @@ function createServer() {
           };
           room.messages.push(message);
           if (room.messages.length > 100) room.messages.shift();
-          broadcastMessage(roomId, message);
+          broadcastMessage(client.spaceId, roomId, message);
           json(response, 201, { ok: true });
           return;
         }
 
         if (requestUrl.pathname === '/api/message-delete') {
           const roomId = cleanRoom(body.room || client.textRoom);
-          const room = getRoom(roomId);
+          const room = getRoom(client.spaceId, roomId);
           const messageId = cleanId(body.messageId);
           const index = room.messages.findIndex((message) => message.id === messageId);
           if (index < 0) { json(response, 404, { error: 'Mensagem não encontrada.' }); return; }
@@ -589,7 +666,7 @@ function createServer() {
             const file = files.get(attachmentId);
             if (file) { files.delete(attachmentId); storedFileBytes -= file.size; }
           }
-          broadcastTextRoom(roomId, { type: 'message-deleted', messageId });
+          broadcastTextRoom(client.spaceId, roomId, { type: 'message-deleted', messageId });
           json(response, 200, { ok: true });
           return;
         }
@@ -597,8 +674,8 @@ function createServer() {
         if (requestUrl.pathname === '/api/profile') {
           client.name = cleanName(body.name || client.name);
           if (Object.hasOwn(body, 'avatar')) client.avatar = cleanAvatar(body.avatar);
-          sendTextPresence(client.textRoom);
-          sendVoiceState();
+          sendTextPresence(client.spaceId, client.textRoom);
+          sendVoiceState(client.spaceId);
           json(response, 200, { ok: true, user: publicUser(client) });
           return;
         }
@@ -612,17 +689,17 @@ function createServer() {
             return;
           }
           if (previousVoiceRoom && previousVoiceRoom !== nextVoiceRoom) {
-            if (client.media?.screenSharing) broadcastVoiceRoom(previousVoiceRoom, { type: 'annotation', action: 'clear', shareOwnerId: clientId, from: clientId });
+            if (client.media?.screenSharing) broadcastVoiceRoom(client.spaceId, previousVoiceRoom, { type: 'annotation', action: 'clear', shareOwnerId: clientId, from: clientId });
             annotationItems.delete(clientId);
-            broadcastVoiceRoom(previousVoiceRoom, { type: 'peer-left', id: clientId }, clientId);
+            broadcastVoiceRoom(client.spaceId, previousVoiceRoom, { type: 'peer-left', id: clientId }, clientId);
           }
           client.voiceRoom = nextVoiceRoom;
           client.media = joining ? cleanMediaState(body.media) : cleanMediaState();
-          sendVoiceState();
+          sendVoiceState(client.spaceId);
           if (joining) {
             for (const [ownerId, store] of annotationItems) {
               const owner = clients.get(ownerId);
-              if (owner?.voiceRoom !== nextVoiceRoom || !owner.media?.screenSharing || !store.size) continue;
+              if (owner?.spaceId !== client.spaceId || owner?.voiceRoom !== nextVoiceRoom || !owner.media?.screenSharing || !store.size) continue;
               writeSse(client.response, {
                 type: 'annotation-sync', shareOwnerId: ownerId,
                 items: [...store.values()].map((entry) => entry.item),
@@ -633,10 +710,10 @@ function createServer() {
             ok: true,
             voiceRoom: client.voiceRoom,
             conference: conferenceConfig(client.voiceRoom),
-            users: client.voiceRoom ? voiceChannelsState()[client.voiceRoom] : [],
+            users: client.voiceRoom ? voiceChannelsState(client.spaceId)[client.voiceRoom] : [],
             annotations: client.voiceRoom ? [...annotationItems].flatMap(([ownerId, store]) => {
               const owner = clients.get(ownerId);
-              return owner?.voiceRoom === client.voiceRoom && owner.media?.screenSharing && store.size
+              return owner?.spaceId === client.spaceId && owner?.voiceRoom === client.voiceRoom && owner.media?.screenSharing && store.size
                 ? [{ shareOwnerId: ownerId, items: [...store.values()].map((entry) => entry.item) }]
                 : [];
             }) : [],
@@ -653,9 +730,9 @@ function createServer() {
           client.media = cleanMediaState(body.media);
           if (wasSharing !== client.media.screenSharing) {
             annotationItems.delete(clientId);
-            broadcastVoiceRoom(client.voiceRoom, { type: 'annotation', action: 'clear', shareOwnerId: clientId, from: clientId });
+            broadcastVoiceRoom(client.spaceId, client.voiceRoom, { type: 'annotation', action: 'clear', shareOwnerId: clientId, from: clientId });
           }
-          sendVoiceState();
+          sendVoiceState(client.spaceId);
           json(response, 200, { ok: true });
           return;
         }
@@ -663,7 +740,7 @@ function createServer() {
         if (requestUrl.pathname === '/api/signal') {
           const targetId = cleanId(body.target);
           const target = clients.get(targetId);
-          if (!client.voiceRoom || target?.voiceRoom !== client.voiceRoom) {
+          if (!client.voiceRoom || target?.spaceId !== client.spaceId || target?.voiceRoom !== client.voiceRoom) {
             json(response, 409, { error: 'Participante fora da chamada' });
             return;
           }
@@ -675,7 +752,7 @@ function createServer() {
         if (requestUrl.pathname === '/api/annotation') {
           const shareOwnerId = cleanId(body.shareOwnerId);
           const shareOwner = clients.get(shareOwnerId);
-          if (!client.voiceRoom || shareOwner?.voiceRoom !== client.voiceRoom || !shareOwner.media.screenSharing) {
+          if (!client.voiceRoom || shareOwner?.spaceId !== client.spaceId || shareOwner?.voiceRoom !== client.voiceRoom || !shareOwner.media.screenSharing) {
             json(response, 409, { error: 'Compartilhamento indisponível.' });
             return;
           }
@@ -723,7 +800,7 @@ function createServer() {
             if (store.size >= 500) store.delete(store.keys().next().value);
             store.set(item.id, { from: clientId, authorName: client.name, item }); payload.item = item;
           }
-          broadcastVoiceRoom(client.voiceRoom, payload);
+          broadcastVoiceRoom(client.spaceId, client.voiceRoom, payload);
           json(response, 201, { ok: true });
           return;
         }
@@ -747,7 +824,7 @@ if (require.main === module) {
   const port = Number(process.env.PORT) || 4173;
   const host = process.env.HOST || '0.0.0.0';
   const server = createServer();
-  server.listen(port, host, () => console.log(`Concord disponível em http://localhost:${port}`));
+  server.listen(port, host, () => console.log(`Alpendre disponível em http://localhost:${port}`));
 
   let shuttingDown = false;
   const shutdown = () => {
