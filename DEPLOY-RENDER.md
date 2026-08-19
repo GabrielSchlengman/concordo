@@ -15,8 +15,18 @@ Para a chamada funcionar entre redes diferentes, adicione no Render as variávei
 
 Sem essas variáveis, o Alpendre ainda tenta conexão direta. Ela pode funcionar na mesma rede ou em alguns roteadores, mas não é garantida e não esconde totalmente o IP entre participantes.
 
+## Banco gratuito opcional
+
+Para impedir que espaços e mensagens sumam quando o Render reiniciar, execute `supabase/schema.sql` no SQL Editor do Supabase e adicione no Render:
+
+- `SUPABASE_URL`
+- `SUPABASE_SERVICE_ROLE_KEY`
+
+A service role é secreta e deve existir somente no ambiente do Render. Sem essas duas variáveis, o Alpendre usa a memória como antes.
+
 ## Plano gratuito
 
 - O serviço pode adormecer quando não estiver sendo usado.
-- Espaços, histórico e anexos em memória podem desaparecer após reinício.
+- Sem Supabase, espaços e histórico em memória podem desaparecer após reinício.
+- Anexos continuam temporários nesta versão, mesmo com o banco configurado.
 - O link público não depende do computador do criador ficar ligado.

@@ -41,7 +41,7 @@ const DEFAULTS = {
   microphoneId: 'default', speakerId: 'default', cameraId: 'default',
   sensitivity: 12, masterVolume: 100,
   noiseSuppression: true, echoCancellation: true, autoGainControl: true,
-  participantVideo: true, selfView: true, screenPreview: true,
+  participantVideo: true, selfView: true, screenPreview: true, screenAudio: true,
   annotations: true, autoFocus: true, cameraQuality: '720', screenQuality: '1080',
   protectIp: false, privacyModeVersion: 2, callSounds: true, soundVolume: 45, desktopOverlay: true,
   accent: '#8b5cf6', compact: false,
@@ -105,7 +105,7 @@ const IDS = [
   'settings-overlay','close-settings','settings-avatar','settings-avatar-fallback','settings-name-display','display-name','avatar-input','remove-avatar','save-profile','profile-feedback',
   'input-device','output-device','master-volume','master-volume-value','mic-sensitivity','sensitivity-value','loopback-button','settings-meter','sensitivity-threshold','mic-level-value','mic-loopback-audio',
   'noise-suppression','noise-status','echo-cancellation','echo-status','auto-gain','gain-status','protect-ip','relay-status','call-sounds','sound-volume','sound-volume-value','desktop-overlay','desktop-overlay-status',
-  'setting-participant-video','setting-self-view','setting-screen-preview','setting-annotations','setting-auto-focus','camera-device','camera-quality','screen-quality','accent-color','compact-mode',
+  'setting-participant-video','setting-self-view','setting-screen-preview','setting-screen-audio','setting-annotations','setting-auto-focus','camera-device','camera-quality','screen-quality','accent-color','compact-mode',
   'context-menu','toast-stack',
 ];
 const el = Object.fromEntries(IDS.map((id) => [id.replace(/-([a-z])/g, (_, letter) => letter.toUpperCase()), document.getElementById(id)]));
@@ -367,6 +367,7 @@ function mediaState() {
     micEnabled: state.micEnabled && Boolean(state.audioStream?.getAudioTracks()[0]),
     cameraEnabled: Boolean(state.cameraStream?.getVideoTracks()[0]),
     screenSharing: Boolean(state.screenStream?.getVideoTracks()[0]),
+    screenAudio: state.screenStream?.getAudioTracks()[0]?.readyState === 'live' && state.screenStream.getAudioTracks()[0].enabled,
     annotationsEnabled: Boolean(state.annotationsEnabled && state.screenStream),
     deafened: state.deafened,
   };
@@ -910,10 +911,12 @@ async function replaceLocalTrack(kind, track, stream) {
 
 function addLocalTracks(peer) {
   const tracks = [
-    ['audio', state.audioStream], ['camera', state.cameraStream], ['screen', state.screenStream],
+    ['audio', state.audioStream?.getAudioTracks()[0], state.audioStream],
+    ['camera', state.cameraStream?.getVideoTracks()[0], state.cameraStream],
+    ['screen', state.screenStream?.getVideoTracks()[0], state.screenStream],
+    ['screen-audio', state.screenStream?.getAudioTracks()[0], state.screenStream],
   ];
-  for (const [kind, stream] of tracks) {
-    const track = kind === 'audio' ? stream?.getAudioTracks()[0] : stream?.getVideoTracks()[0];
+  for (const [kind, track, stream] of tracks) {
     if (!track) continue;
     const sender = peer.pc.addTrack(track, stream);
     sender._concordKind = kind;
@@ -1125,6 +1128,15 @@ async function handleSignal(from, data) {
   try {
     if (data.mediaDescription) {
       peer.description = data.mediaDescription;
+      for (const entry of peer.audioNodes) {
+        const isScreenAudio = entry.trackId === peer.description.screenAudioTrackId || entry.streamId === peer.description.screenStreamId;
+        if (isScreenAudio && !entry.screenAudio) {
+          entry.screenAudio = true;
+          try { entry.source?.disconnect(); } catch { /* já desconectado */ }
+          if (state.audioMonitors.get(peer.id) === entry.analyser) state.audioMonitors.delete(peer.id);
+          entry.source = null; entry.analyser = null;
+        }
+      }
       renderVideoGrid();
       return;
     }
@@ -1168,6 +1180,7 @@ function localMediaDescription() {
   return {
     cameraStreamId: state.cameraStream?.id || '',
     screenStreamId: state.screenStream?.id || '',
+    screenAudioTrackId: state.screenStream?.getAudioTracks()[0]?.id || '',
   };
 }
 
@@ -1196,9 +1209,17 @@ function setupRemoteAudio(peer, stream, track) {
   const audio = document.createElement('audio');
   audio.autoplay = true; audio.playsInline = true; audio.srcObject = audioStream; audio.className = 'remote-call-audio';
   document.body.append(audio);
-  const entry = { trackId: track.id, audio, source: null, gain: null, analyser: null };
+  const entry = {
+    trackId: track.id,
+    streamId: stream.id,
+    screenAudio: track.id === peer.description.screenAudioTrackId || stream.id === peer.description.screenStreamId,
+    audio,
+    source: null,
+    gain: null,
+    analyser: null,
+  };
   const context = getAudioContext();
-  if (context) {
+  if (context && !entry.screenAudio) {
     try {
       entry.source = context.createMediaStreamSource(audioStream);
       entry.analyser = context.createAnalyser(); entry.analyser.fftSize = 512;
@@ -1320,20 +1341,31 @@ async function toggleScreen() {
       const selected = await chooseDesktopSource();
       if (!selected) return;
     }
-    state.screenStream = await navigator.mediaDevices.getDisplayMedia({
-      video: { height: { ideal: height }, frameRate: { ideal: 30, max: 30 } }, audio: false,
-    });
+    const displayOptions = {
+      video: { height: { ideal: height }, frameRate: { ideal: 30, max: 30 } },
+      audio: state.settings.screenAudio ? { echoCancellation: false, noiseSuppression: false, autoGainControl: false, suppressLocalAudioPlayback: false } : false,
+      selfBrowserSurface: 'exclude', surfaceSwitching: 'include', systemAudio: state.settings.screenAudio ? 'include' : 'exclude',
+    };
+    state.screenStream = await navigator.mediaDevices.getDisplayMedia(displayOptions);
     state.annotationsEnabled = state.settings.annotations;
     const track = state.screenStream.getVideoTracks()[0];
     track.onended = () => stopScreen();
     await replaceLocalTrack('screen', track, state.screenStream);
+    const screenAudioTrack = state.screenStream.getAudioTracks()[0];
+    if (screenAudioTrack) {
+      screenAudioTrack.enabled = state.settings.screenAudio;
+      screenAudioTrack.onended = () => { postMediaState(); updateControlStates(); renderVideoGrid(); };
+      await replaceLocalTrack('screen-audio', screenAudioTrack, state.screenStream);
+    }
     if (window.concordDesktop?.isDesktop && state.settings.desktopOverlay && state.desktopOverlayAvailable) {
       await window.concordDesktop.startAnnotationOverlay().catch(() => false);
       syncDesktopAnnotationOverlay();
     }
     if (state.settings.autoFocus) { state.layout = 'focus'; state.autoFocusedShareId = state.clientId; }
     playCue('screen'); updateControlStates(); renderVideoGrid(); postMediaState();
-    toast('Sua tela está sendo compartilhada.');
+    if (screenAudioTrack) toast('Sua tela e o áudio dela estão sendo compartilhados.');
+    else if (state.settings.screenAudio) toast('Tela compartilhada sem áudio. Na janela do navegador, marque a opção de compartilhar áudio.', 'error');
+    else toast('Sua tela está sendo compartilhada.');
   } catch (error) {
     if (error.name !== 'NotAllowedError') toast('Não consegui iniciar o compartilhamento.', 'error');
   }
@@ -1372,8 +1404,10 @@ async function chooseDesktopSource() {
 function stopScreen(notify = true) {
   if (!state.screenStream) return;
   for (const peer of state.peers.values()) {
-    const sender = [...peer.pc.getSenders()].find((item) => item._concordKind === 'screen');
-    if (sender) sender.replaceTrack(null).catch(() => {});
+    for (const kind of ['screen', 'screen-audio']) {
+      const sender = [...peer.pc.getSenders()].find((item) => item._concordKind === kind);
+      if (sender) sender.replaceTrack(null).catch(() => {});
+    }
   }
   state.screenStream.getTracks().forEach((track) => { track.onended = null; track.stop(); }); state.screenStream = null;
   window.concordDesktop?.stopAnnotationOverlay?.().catch(() => {}); state.desktopOverlayAvailable = false;
@@ -1422,7 +1456,9 @@ function makeVideoTile({ key, user, stream, screen = false, local = false, hidde
   const text = document.createElement('span'); text.textContent = `${user.name}${local ? ' (você)' : ''}`; label.append(text);
   tile.append(video, fallback, label);
   if (screen) {
-    const badge = document.createElement('button'); badge.className = 'screen-badge'; badge.textContent = local ? 'SEU PREVIEW' : 'TELA'; badge.title = 'Abrir ferramentas nesta tela';
+    const badge = document.createElement('button'); badge.className = 'screen-badge';
+    const hasScreenAudio = local ? mediaState().screenAudio : user.media?.screenAudio === true;
+    badge.textContent = `${local ? 'SEU PREVIEW' : 'TELA'}${hasScreenAudio ? ' + ÁUDIO' : ''}`; badge.title = 'Abrir ferramentas nesta tela';
     badge.addEventListener('click', (event) => {
       event.stopPropagation(); state.activeShareOwnerId = user.id; state.annotationPanelOpen = true;
       updateAnnotationPanel(); renderVideoGrid(); updateControlStates();
@@ -1853,7 +1889,8 @@ function syncSettingsControls() {
   el.sensitivityThreshold.style.left = `${state.settings.sensitivity}%`;
   el.noiseSuppression.checked = state.settings.noiseSuppression; el.echoCancellation.checked = state.settings.echoCancellation; el.autoGain.checked = state.settings.autoGainControl;
   el.settingParticipantVideo.checked = state.settings.participantVideo; el.settingSelfView.checked = state.settings.selfView;
-  el.settingScreenPreview.checked = state.settings.screenPreview; el.settingAnnotations.checked = state.settings.annotations; el.settingAutoFocus.checked = state.settings.autoFocus;
+  el.settingScreenPreview.checked = state.settings.screenPreview; el.settingScreenAudio.checked = state.settings.screenAudio;
+  el.settingAnnotations.checked = state.settings.annotations; el.settingAutoFocus.checked = state.settings.autoFocus;
   el.protectIp.checked = state.settings.protectIp; el.callSounds.checked = state.settings.callSounds;
   el.soundVolume.value = state.settings.soundVolume; el.soundVolumeValue.value = `${state.settings.soundVolume}%`;
   el.desktopOverlay.checked = state.settings.desktopOverlay;
@@ -2078,6 +2115,15 @@ visualSettings.forEach(([control, key]) => control.addEventListener('change', ()
   }
   saveSettings(); updateControlStates(); renderVideoGrid(); postMediaState();
 }));
+el.settingScreenAudio.addEventListener('change', () => {
+  state.settings.screenAudio = el.settingScreenAudio.checked; saveSettings();
+  const track = state.screenStream?.getAudioTracks()[0];
+  if (track?.readyState === 'live') {
+    track.enabled = state.settings.screenAudio; updateControlStates(); renderVideoGrid(); postMediaState();
+  } else if (state.screenStream && state.settings.screenAudio) {
+    toast('Pare e compartilhe novamente para escolher uma fonte com áudio.', 'error');
+  }
+});
 el.cameraQuality.addEventListener('change', () => { state.settings.cameraQuality = el.cameraQuality.value; saveSettings(); });
 el.screenQuality.addEventListener('change', () => { state.settings.screenQuality = el.screenQuality.value; saveSettings(); });
 el.accentColor.addEventListener('input', () => { state.settings.accent = el.accentColor.value; saveSettings(); });

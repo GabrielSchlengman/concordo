@@ -59,10 +59,15 @@ async function closeEvents(...sessions) {
   sessions.forEach((session) => session.controller.abort());
 }
 
-test('publica o Alpendre 1.1.1 sem credenciais TURN compartilhadas', async () => {
+test('publica o Alpendre 1.2.0 sem credenciais TURN compartilhadas', async () => {
   await withServer(async (baseUrl) => {
     const health = await fetch(`${baseUrl}/api/health`);
-    assert.deepEqual(await health.json(), { ok: true, name: 'Alpendre', version: '1.1.1' });
+    assert.deepEqual(await health.json(), {
+      ok: true,
+      name: 'Alpendre',
+      version: '1.2.0',
+      persistence: { mode: 'memory', configured: false, healthy: false },
+    });
     assert.equal(health.headers.get('x-content-type-options'), 'nosniff');
     assert.match(health.headers.get('content-security-policy'), /frame-src 'self'/);
     assert.doesNotMatch(health.headers.get('content-security-policy'), /meet\.jit\.si/);
@@ -83,6 +88,7 @@ test('entrega a interface real sem os botões fictícios antigos', async () => {
     assert.match(html, /Proteção rígida de IP/);
     assert.match(html, /Gravar mensagem de voz/);
     assert.match(html, /Anotações por cima da minha tela/);
+    assert.match(html, /Compartilhar áudio da tela/);
     assert.doesNotMatch(html, /Marcar onde clicar/);
     assert.match(html, /alpendre-chimp-a\.png/);
     assert.match(html, /Chamada dentro do Alpendre/);
@@ -100,6 +106,8 @@ test('integra a chamada WebRTC dentro do app e mantém a camada segura do deskto
   assert.match(app, /protectIp: false/);
   assert.match(app, /className = 'remote-call-audio'/);
   assert.match(app, /new RTCPeerConnection/);
+  assert.match(app, /screen-audio/);
+  assert.match(app, /systemAudio: state\.settings\.screenAudio \? 'include' : 'exclude'/);
   assert.doesNotMatch(app, /jitsi|meet\.ffmuc/i);
   assert.doesNotMatch(app, /window\.open\(/);
   assert.match(app, /startAnnotationOverlay/);
