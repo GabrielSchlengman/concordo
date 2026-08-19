@@ -92,6 +92,7 @@ const state = {
   knownCallUsers: new Map(), callRosterReady: false,
   pendingFiles: [], recorder: null, recordingStream: null, recordingStartedAt: 0, recordingTimer: null,
   desktopOverlayAvailable: false, mediaWarningAt: 0, unreadMessages: 0,
+  spaceRecoveryTimer: null,
   callProvider: 'direct', conference: null,
 };
 
@@ -228,7 +229,7 @@ function renderSpaces() {
 
 async function loadSpaces() {
   try {
-    const query = new URLSearchParams({ clientId: state.clientId, sessionToken: state.sessionToken });
+    const query = new URLSearchParams({ clientId: state.clientId, deviceId: state.deviceId, sessionToken: state.sessionToken });
     const response = await fetch(`/api/spaces?${query}`); const result = await response.json();
     if (response.ok) state.spaces = result.spaces || [];
   } catch { state.spaces = []; }
@@ -236,11 +237,37 @@ async function loadSpaces() {
 }
 
 async function resolveSpace(spaceId) {
-  const query = new URLSearchParams({ id: spaceId, clientId: state.clientId, sessionToken: state.sessionToken });
+  const query = new URLSearchParams({ id: spaceId, clientId: state.clientId, deviceId: state.deviceId, sessionToken: state.sessionToken });
   const response = await fetch(`/api/space?${query}`);
   const result = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(result.error || 'Espaço não encontrado.');
+  if (!response.ok) {
+    const error = new Error(result.error || 'Espaço não encontrado.');
+    error.status = response.status;
+    throw error;
+  }
   return result.space;
+}
+
+function forgetSpace(spaceId) {
+  state.savedSpaces = state.savedSpaces.filter((space) => space.id !== spaceId);
+  localStorage.setItem('alpendre-saved-spaces', JSON.stringify(state.savedSpaces));
+}
+
+async function returnToAlpendre(message = '') {
+  const previousSpaceId = state.spaceId;
+  if (previousSpaceId !== 'alpendre') forgetSpace(previousSpaceId);
+  state.spaceId = 'alpendre';
+  localStorage.setItem('alpendre-space', 'alpendre');
+  const url = new URL(location.href); url.searchParams.delete('space'); history.replaceState({}, '', url);
+  try { state.space = await resolveSpace('alpendre'); }
+  catch {
+    state.space = { id: 'alpendre', name: 'Alpendre', visibility: 'public', role: 'member', channels: { text: { geral: 'geral', projetos: 'projetos', cafe: 'café' }, voice: { lobby: 'Lobby', jogos: 'Jogatina', musica: 'Música' } } };
+  }
+  state.textRoom = 'geral'; state.textUsers = [];
+  state.voiceChannels = { lobby: [], jogos: [], musica: [] }; state.callUsers = [];
+  applySpaceChannels(state.space); rememberSpace(state.space); renderSpaces();
+  if (message) toast(message);
+  if (state.tabActive) connectEvents();
 }
 
 async function switchSpace(spaceId) {
@@ -424,6 +451,17 @@ function connectEvents() {
   source.onerror = () => {
     document.querySelector('.status-dot').style.background = 'var(--red)';
     el.callStatus.textContent = state.voiceRoom ? 'Reconectando ao Alpendre…' : '';
+    if (state.spaceId !== 'alpendre' && !state.spaceRecoveryTimer) {
+      state.spaceRecoveryTimer = setTimeout(async () => {
+        state.spaceRecoveryTimer = null;
+        try { await resolveSpace(state.spaceId); }
+        catch (error) {
+          if (error.status === 403 || error.status === 404) {
+            await returnToAlpendre('O servidor anterior expirou. Você voltou ao Alpendre público.');
+          }
+        }
+      }, 900);
+    }
   };
   source.onmessage = async (event) => {
     let payload;
@@ -2070,6 +2108,18 @@ window.addEventListener('beforeunload', () => {
   if (owner?.tabId === state.tabId) localStorage.removeItem(ACTIVE_TAB_KEY);
 });
 
-applyAppearance(); syncSettingsControls(); updateSelfUI(); updateControlStates(); updateProcessingStatus(); renderSpaces(); loadSpaces();
-state.annotationsEnabled = state.settings.annotations;
-activateTab(false);
+async function startApp() {
+  applyAppearance(); syncSettingsControls(); updateSelfUI(); updateControlStates(); updateProcessingStatus();
+  state.annotationsEnabled = state.settings.annotations;
+  try {
+    state.space = await resolveSpace(state.spaceId);
+  } catch (error) {
+    if (state.spaceId !== 'alpendre' && (error.status === 403 || error.status === 404)) {
+      await returnToAlpendre();
+    }
+  }
+  applySpaceChannels(state.space); renderSpaces(); await loadSpaces();
+  await activateTab(false);
+}
+
+startApp();

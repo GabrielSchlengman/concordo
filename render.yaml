@@ -1,4 +1,4 @@
-# Alpendre 1.0.0 — chamada WebRTC interna e espaços públicos/privados
+# Alpendre 1.1.1 — recuperação segura do servidor público padrão
 services:
   - type: web
     name: lume-app
