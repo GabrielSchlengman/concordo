@@ -21,7 +21,6 @@ const ICONS = {
   pencil: '<path d="m18 2 4 4L7 21H3v-4L18 2ZM14 6l4 4"/>',
   eraser: '<path d="m7 21-4-4L16 4a2.8 2.8 0 0 1 4 4L8 20a3 3 0 0 1-1 .7ZM6 14l5 5M9 21h12"/>',
   text: '<path d="M5 4h14M12 4v16M8 20h8"/>',
-  pointer: '<circle cx="12" cy="12" r="4"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/>',
   undo: '<path d="M9 7 4 12l5 5M4 12h9a7 7 0 0 1 7 7"/>',
   paperclip: '<path d="m21.4 11.6-8.9 8.9a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 0 1 5.7 5.7l-9.2 9.2a2 2 0 0 1-2.8-2.8l8.5-8.5"/>',
   waveform: '<path d="M3 10v4M7 7v10M11 3v18M15 8v8M19 5v14M23 10v4"/>',
@@ -78,7 +77,7 @@ const state = {
   clientId, deviceId, tabId, sessionToken: '', tabActive: false, tabHeartbeat: null, tabStandbyTimer: null,
   name: localStorage.getItem('alpendre-name') || localStorage.getItem('concord-name') || localStorage.getItem('lume-name') || 'Visitante',
   avatar: localStorage.getItem('alpendre-avatar') || localStorage.getItem('concord-avatar') || '',
-  spaceId: initialSpaceId, space: { id: initialSpaceId, name: initialSpaceId === 'alpendre' ? 'Alpendre' : 'Espaço', visibility: initialSpaceId.startsWith('priv-') ? 'private' : 'public' }, spaces: [],
+  spaceId: initialSpaceId, space: { id: initialSpaceId, name: initialSpaceId === 'alpendre' ? 'Alpendre' : 'Espaço', visibility: initialSpaceId.startsWith('priv-') ? 'private' : 'public', role: initialSpaceId === 'alpendre' ? 'member' : 'visitor', channels: { text: { geral: 'geral', projetos: 'projetos', cafe: 'café' }, voice: { lobby: 'Lobby', jogos: 'Jogatina', musica: 'Música' } } }, spaces: [],
   savedSpaces: (() => { try { return JSON.parse(localStorage.getItem('alpendre-saved-spaces') || '[]'); } catch { return []; } })(),
   textRoom: 'geral', voiceRoom: null, eventSource: null,
   textUsers: [], voiceChannels: { lobby: [], jogos: [], musica: [] }, callUsers: [],
@@ -98,7 +97,7 @@ const state = {
 
 const IDS = [
   'room-title','chat-area','messages','new-messages','message-form','message-input','attachment-tray','attach-button','file-input','record-audio','recording-time','member-count','member-list','toggle-member-list',
-  'space-list','open-spaces','space-name','space-visibility','spaces-overlay','close-spaces','public-spaces','new-space-name','new-space-private','create-space','space-invite-code','join-private-space',
+  'space-list','open-spaces','space-name','space-visibility','spaces-overlay','close-spaces','public-spaces','new-space-name','new-space-private','create-space','space-invite-code','join-private-space','space-management',
   'call-stage','call-title','call-status','video-grid','reconnect-media','layout-button','view-menu','layout-grid','layout-focus','participant-video-button','self-view-button','screen-preview-button','fullscreen-button',
   'annotation-toolbar','annotation-target','close-annotation','draw-size','undo-drawing','clear-drawings','annotation-permission-row','allow-annotations','annotation-help','call-mic','call-deafen','call-camera','call-screen','call-draw','leave-call',
   'connection-panel','connected-room','disconnect-voice','profile-button','profile-avatar','profile-fallback','self-name','self-status','bar-mic','bar-deafen','open-settings',
@@ -177,14 +176,33 @@ function spaceInitials(name) {
 
 function rememberSpace(space) {
   if (!space?.id) return;
-  state.savedSpaces = [space, ...state.savedSpaces.filter((item) => item.id !== space.id)].slice(0, 20);
+  const index = state.savedSpaces.findIndex((item) => item.id === space.id);
+  if (index >= 0) state.savedSpaces[index] = { ...state.savedSpaces[index], ...space };
+  else state.savedSpaces.push(space);
+  state.savedSpaces = state.savedSpaces.slice(0, 20);
   localStorage.setItem('alpendre-saved-spaces', JSON.stringify(state.savedSpaces));
+}
+
+function applySpaceChannels(space = state.space) {
+  Object.assign(CHANNELS, space?.channels?.text || {}, space?.channels?.voice || {});
+  document.querySelectorAll('[data-text-room]').forEach((button) => {
+    const label = button.querySelector('[data-channel-label]'); if (label) label.textContent = CHANNELS[button.dataset.textRoom];
+  });
+  document.querySelectorAll('[data-voice-room]').forEach((button) => {
+    const label = button.querySelector('[data-channel-label]'); if (label) label.textContent = CHANNELS[button.dataset.voiceRoom];
+  });
+  el.roomTitle.textContent = CHANNELS[state.textRoom];
+  el.messageInput.placeholder = `Conversar em #${CHANNELS[state.textRoom]}`;
+  updateSelfUI();
+  if (state.voiceRoom) { el.callTitle.textContent = CHANNELS[state.voiceRoom]; el.connectedRoom.textContent = CHANNELS[state.voiceRoom]; }
 }
 
 function renderSpaces() {
   rememberSpace(state.space);
-  el.spaceName.textContent = String(state.space?.name || 'Alpendre').toUpperCase();
-  el.spaceVisibility.textContent = state.space?.visibility === 'private' ? 'espaço privado' : 'espaço público';
+  el.spaceName.textContent = 'ALPENDRE';
+  el.spaceVisibility.textContent = `Servidor: ${state.space?.name || 'Alpendre'} · ${state.space?.visibility === 'private' ? 'privado' : 'público'}`;
+  const allowedIds = new Set(['alpendre', state.spaceId, ...state.spaces.map((space) => space.id)]);
+  state.savedSpaces = state.savedSpaces.filter((space) => allowedIds.has(space.id));
   el.spaceList.replaceChildren();
   for (const space of state.savedSpaces) {
     const button = document.createElement('button');
@@ -199,24 +217,27 @@ function renderSpaces() {
     const mark = document.createElement('span'); mark.className = 'public-space-mark'; mark.textContent = spaceInitials(space.name);
     const copy = document.createElement('span'); copy.className = 'public-space-copy';
     const title = document.createElement('strong'); title.textContent = space.name;
-    const detail = document.createElement('small'); detail.textContent = `${space.online || 0} online · público`;
+    const detail = document.createElement('small'); detail.textContent = `${space.online || 0} online · ${space.visibility === 'private' ? 'privado' : 'público'}${space.role === 'owner' ? ' · você administra' : ''}`;
     copy.append(title, detail); button.append(mark, copy); button.addEventListener('click', () => switchSpace(space.id)); el.publicSpaces.append(button);
   }
   if (!state.spaces.length) {
     const empty = document.createElement('p'); empty.textContent = 'Nenhum espaço público disponível agora.'; el.publicSpaces.append(empty);
   }
+  renderSpaceManagement();
 }
 
 async function loadSpaces() {
   try {
-    const response = await fetch('/api/spaces'); const result = await response.json();
+    const query = new URLSearchParams({ clientId: state.clientId, sessionToken: state.sessionToken });
+    const response = await fetch(`/api/spaces?${query}`); const result = await response.json();
     if (response.ok) state.spaces = result.spaces || [];
   } catch { state.spaces = []; }
   renderSpaces();
 }
 
 async function resolveSpace(spaceId) {
-  const response = await fetch(`/api/space?id=${encodeURIComponent(spaceId)}`);
+  const query = new URLSearchParams({ id: spaceId, clientId: state.clientId, sessionToken: state.sessionToken });
+  const response = await fetch(`/api/space?${query}`);
   const result = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(result.error || 'Espaço não encontrado.');
   return result.space;
@@ -229,6 +250,7 @@ async function switchSpace(spaceId) {
     const space = await resolveSpace(clean);
     if (state.voiceRoom) await leaveCall();
     state.spaceId = space.id; state.space = space; state.textRoom = 'geral'; state.textUsers = [];
+    applySpaceChannels(space);
     state.voiceChannels = { lobby: [], jogos: [], musica: [] }; state.callUsers = [];
     localStorage.setItem('alpendre-space', space.id); rememberSpace(space);
     const url = new URL(location.href); url.searchParams.set('space', space.id); history.replaceState({}, '', url);
@@ -241,15 +263,76 @@ async function createSpace() {
   const name = el.newSpaceName.value.trim();
   if (!name) { toast('Dê um nome ao espaço.', 'error'); return; }
   try {
-    const response = await fetch('/api/spaces', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, visibility: el.newSpacePrivate.checked ? 'private' : 'public' }) });
-    const result = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(result.error || 'Não foi possível criar o espaço.');
+    const result = await api('/api/spaces', { name, visibility: el.newSpacePrivate.checked ? 'private' : 'public' });
     el.newSpaceName.value = ''; await loadSpaces(); await switchSpace(result.space.id);
-    if (result.space.visibility === 'private') {
-      navigator.clipboard?.writeText(result.space.id).catch(() => {});
-      toast(`Espaço privado criado. Código copiado: ${result.space.id}`);
-    }
+    navigator.clipboard?.writeText(result.space.inviteCode).catch(() => {});
+    toast(`Servidor criado. Código copiado: ${result.space.inviteCode}`);
   } catch (error) { toast(error.message, 'error'); }
+}
+
+async function joinSpaceByCode() {
+  const code = el.spaceInviteCode.value.trim();
+  if (!code) { toast('Digite o código do convite.', 'error'); return; }
+  try {
+    const result = await api('/api/space-join', { code });
+    el.spaceInviteCode.value = ''; await loadSpaces(); await switchSpace(result.space.id);
+  } catch (error) { toast(error.message, 'error'); }
+}
+
+async function spaceAction(action, targetClientId = '') {
+  try {
+    await api('/api/space-action', { action, spaceId: state.spaceId, targetClientId });
+    if (action === 'leave' || action === 'delete') await switchSpace('alpendre');
+    else await loadSpaces();
+  } catch (error) { toast(error.message, 'error'); }
+}
+
+async function renameChannel(kind, channelId, name) {
+  try {
+    const result = await api('/api/channel-update', { spaceId: state.spaceId, kind, channelId, name });
+    state.space = result.space; applySpaceChannels(state.space); rememberSpace(state.space); renderSpaces();
+  } catch (error) { toast(error.message, 'error'); }
+}
+
+function renderSpaceManagement() {
+  const space = state.space;
+  el.spaceManagement.replaceChildren();
+  el.spaceManagement.classList.toggle('hidden', !space || space.id === 'alpendre');
+  if (!space || space.id === 'alpendre') return;
+  const head = document.createElement('div'); head.className = 'space-management-head';
+  const info = document.createElement('div');
+  const title = document.createElement('strong'); title.textContent = space.name;
+  const detail = document.createElement('small'); detail.textContent = space.role === 'owner' ? 'Você administra este servidor.' : 'Você participa deste servidor.';
+  info.append(title, detail); const actions = document.createElement('div'); actions.className = 'space-actions';
+  if (space.inviteCode) {
+    const copy = document.createElement('button'); copy.className = 'secondary-button'; copy.textContent = 'Copiar convite';
+    copy.addEventListener('click', () => { navigator.clipboard?.writeText(space.inviteCode); toast('Código de convite copiado.'); }); actions.append(copy);
+  }
+  const exit = document.createElement('button'); exit.className = 'mini-danger';
+  exit.textContent = space.role === 'owner' ? 'Excluir servidor' : 'Sair do servidor';
+  exit.addEventListener('click', () => {
+    const action = space.role === 'owner' ? 'delete' : 'leave';
+    if (confirm(action === 'delete' ? `Excluir ${space.name} para todos?` : `Sair de ${space.name}?`)) spaceAction(action);
+  }); actions.append(exit); head.append(info, actions); el.spaceManagement.append(head);
+  if (space.inviteCode) { const code = document.createElement('div'); code.className = 'space-code'; code.textContent = space.inviteCode; el.spaceManagement.append(code); }
+  if (space.role !== 'owner') return;
+  const channelAdmin = document.createElement('div'); channelAdmin.className = 'channel-admin';
+  for (const [kind, ids] of [['text', ['geral', 'projetos', 'cafe']], ['voice', ['lobby', 'jogos', 'musica']]]) {
+    for (const id of ids) {
+      const label = document.createElement('label'); label.textContent = kind === 'text' ? '# ' : '🔊 ';
+      const input = document.createElement('input'); input.value = space.channels?.[kind]?.[id] || CHANNELS[id]; input.maxLength = 32;
+      input.addEventListener('change', () => renameChannel(kind, id, input.value)); label.append(input); channelAdmin.append(label);
+    }
+  }
+  el.spaceManagement.append(channelAdmin);
+  const members = document.createElement('div'); members.className = 'admin-members';
+  for (const member of space.members || []) {
+    const row = document.createElement('div'); row.className = 'admin-member'; const name = document.createElement('span'); name.textContent = member.name;
+    row.append(name);
+    if (member.id !== state.clientId) { const kick = document.createElement('button'); kick.className = 'mini-danger'; kick.textContent = 'Remover'; kick.addEventListener('click', () => spaceAction('kick', member.id)); row.append(kick); }
+    members.append(row);
+  }
+  if (members.childElementCount) el.spaceManagement.append(members);
 }
 
 function mediaState() {
@@ -348,7 +431,7 @@ function connectEvents() {
     if (payload.type === 'hello') {
       state.sessionToken = String(payload.sessionToken || '');
       state.space = payload.space || state.space;
-      renderSpaces();
+      applySpaceChannels(state.space); renderSpaces(); loadSpaces();
       api('/api/profile', { name: state.name, avatar: state.avatar }).catch(() => {});
       renderMessages(payload.messages || []);
       state.textUsers = payload.users || [];
@@ -386,8 +469,14 @@ function connectEvents() {
     } else if (payload.type === 'annotation') {
       handleAnnotation(payload);
     } else if (payload.type === 'annotation-sync') {
-      state.annotations.set(payload.shareOwnerId, Array.isArray(payload.items) ? payload.items : []);
-      document.querySelectorAll(`canvas[data-share-owner="${CSS.escape(payload.shareOwnerId)}"]`).forEach((canvas) => redrawCanvas(canvas, payload.shareOwnerId));
+      syncAnnotationSnapshot(payload.shareOwnerId, payload.items);
+    } else if (payload.type === 'spaces-updated') {
+      loadSpaces();
+    } else if (payload.type === 'space-updated' && payload.space?.id === state.spaceId) {
+      state.space = payload.space; applySpaceChannels(state.space); rememberSpace(state.space); renderSpaces();
+    } else if (payload.type === 'space-removed' && payload.spaceId === state.spaceId) {
+      toast(payload.reason === 'kicked' ? 'O administrador removeu você deste servidor.' : 'Este servidor não está mais disponível.', 'error');
+      switchSpace('alpendre');
     } else if (payload.type === 'server-restarting') {
       toast('O Alpendre está atualizando. A chamada volta sozinha em instantes.');
     }
@@ -797,22 +886,23 @@ async function joinCall(roomId) {
   if (state.voiceRoom === roomId) return;
   getAudioContext();
   if (state.voiceRoom) closeAllPeers();
+  let microphoneError = null;
   try {
+    try {
+      await ensureMicrophone(); state.micEnabled = true;
+      state.audioStream?.getAudioTracks().forEach((track) => { track.enabled = true; });
+    } catch (error) { microphoneError = error; state.micEnabled = false; }
     const result = await api('/api/call', { action: 'join', voiceRoom: roomId, media: mediaState() });
     state.voiceRoom = roomId;
     state.conference = result.conference || null;
     state.callProvider = 'direct';
     state.callUsers = result.users || [];
-    state.annotations.clear(); state.pinnedUserId = null; state.autoFocusedShareId = null;
-    (result.annotations || []).forEach((snapshot) => state.annotations.set(snapshot.shareOwnerId, snapshot.items || []));
+    state.annotations.clear(); state.ownAnnotationIds = []; state.pinnedUserId = null; state.autoFocusedShareId = null;
+    (result.annotations || []).forEach((snapshot) => syncAnnotationSnapshot(snapshot.shareOwnerId, snapshot.items));
     state.knownCallUsers.clear(); state.callRosterReady = false;
     renderCall(); renderVoiceChannels(); updateControlStates();
     syncCallUsers(state.callUsers);
-    try { await ensureMicrophone(); }
-    catch (error) {
-      state.micEnabled = false;
-      toast(error.name === 'NotAllowedError' ? 'Permita o microfone no navegador para falar.' : 'Não consegui abrir seu microfone.', 'error');
-    }
+    if (microphoneError) toast(microphoneError.name === 'NotAllowedError' ? 'Permita o microfone no navegador para falar.' : 'Não consegui abrir seu microfone.', 'error');
     playCue('join');
     toast(`Você entrou em ${CHANNELS[roomId]}.`);
   } catch (error) { toast(error.message, 'error'); }
@@ -823,7 +913,7 @@ async function leaveCall(fromProvider = false) {
   const oldRoom = state.voiceRoom;
   playCue('leave');
   try { await api('/api/call', { action: 'leave' }); } catch { /* limpar localmente mesmo assim */ }
-  state.voiceRoom = null; state.callUsers = []; state.pinnedUserId = null; state.autoFocusedShareId = null;
+  state.voiceRoom = null; state.callUsers = []; state.pinnedUserId = null; state.autoFocusedShareId = null; state.ownAnnotationIds = [];
   state.callProvider = null; state.conference = null;
   state.knownCallUsers.clear(); state.callRosterReady = false; state.annotationPanelOpen = false;
   closeAllPeers(); stopCamera(); stopScreen(false); stopLoopback();
@@ -1398,11 +1488,6 @@ function setupDrawingCanvas(canvas, shareOwnerId, enabled) {
     canvas.addEventListener('pointerdown', (event) => {
       event.preventDefault();
       if (state.drawTool === 'text') { createTextAnnotation(canvas, shareOwnerId, pointFromEvent(event)); return; }
-      if (state.drawTool === 'pointer') {
-        const point = pointFromEvent(event);
-        publishAnnotationItem(shareOwnerId, { id: crypto.randomUUID(), tool: 'pointer', x: point.x, y: point.y, color: state.drawColor, width: state.drawSize });
-        return;
-      }
       canvas.setPointerCapture(event.pointerId);
       activeItem = {
         id: crypto.randomUUID(), tool: state.drawTool, color: state.drawColor,
@@ -1447,7 +1532,16 @@ function addAnnotationItem(ownerId, item, own = false) {
   const items = state.annotations.get(ownerId) || [];
   if (!items.some((existing) => existing.id === item.id)) items.push(item);
   if (items.length > 500) items.shift(); state.annotations.set(ownerId, items);
-  if (own && !state.ownAnnotationIds.some((entry) => entry.id === item.id)) state.ownAnnotationIds.push({ ownerId, id: item.id });
+  if ((own || item.authorId === state.clientId) && !state.ownAnnotationIds.some((entry) => entry.id === item.id)) state.ownAnnotationIds.push({ ownerId, id: item.id });
+  document.querySelectorAll(`canvas[data-share-owner="${CSS.escape(ownerId)}"]`).forEach((canvas) => redrawCanvas(canvas, ownerId));
+  if (ownerId === state.clientId) syncDesktopAnnotationOverlay();
+}
+
+function syncAnnotationSnapshot(ownerId, sourceItems) {
+  const items = Array.isArray(sourceItems) ? sourceItems : [];
+  state.annotations.set(ownerId, items);
+  state.ownAnnotationIds = state.ownAnnotationIds.filter((entry) => entry.ownerId !== ownerId);
+  for (const item of items) if (item.authorId === state.clientId) state.ownAnnotationIds.push({ ownerId, id: item.id });
   document.querySelectorAll(`canvas[data-share-owner="${CSS.escape(ownerId)}"]`).forEach((canvas) => redrawCanvas(canvas, ownerId));
   if (ownerId === state.clientId) syncDesktopAnnotationOverlay();
 }
@@ -1479,13 +1573,6 @@ function redrawCanvas(canvas, ownerId, temporary = null) {
       context.fillStyle = item.color; context.font = `600 ${Math.max(14, item.width * 4) * ratio}px Inter, sans-serif`;
       context.fillText(item.text, drawBox.x + item.x * drawBox.width, drawBox.y + item.y * drawBox.height); continue;
     }
-    if (item.tool === 'pointer') {
-      const x = drawBox.x + item.x * drawBox.width; const y = drawBox.y + item.y * drawBox.height;
-      const radius = Math.max(13, item.width * 3) * ratio;
-      context.strokeStyle = item.color; context.lineWidth = Math.max(2, item.width / 2) * ratio;
-      context.beginPath(); context.arc(x, y, radius, 0, Math.PI * 2); context.moveTo(x - radius * 1.45, y); context.lineTo(x + radius * 1.45, y); context.moveTo(x, y - radius * 1.45); context.lineTo(x, y + radius * 1.45); context.stroke();
-      continue;
-    }
     if (!item.points?.length) continue;
     context.beginPath(); context.strokeStyle = item.color; context.lineWidth = item.width * ratio;
     context.moveTo(drawBox.x + item.points[0].x * drawBox.width, drawBox.y + item.points[0].y * drawBox.height);
@@ -1502,6 +1589,7 @@ function handleAnnotation(payload) {
     document.querySelectorAll(`canvas[data-share-owner="${CSS.escape(ownerId)}"]`).forEach((canvas) => redrawCanvas(canvas, ownerId));
     if (ownerId === state.clientId) syncDesktopAnnotationOverlay();
   } else if (payload.action === 'remove') removeAnnotationItem(ownerId, payload.itemId);
+  else if (payload.action === 'remove-many') for (const itemId of payload.itemIds || []) removeAnnotationItem(ownerId, itemId);
   else if (payload.item || payload.stroke) addAnnotationItem(ownerId, payload.item || payload.stroke, payload.from === state.clientId);
 }
 
@@ -1524,7 +1612,9 @@ function updateAnnotationPanel() {
   el.annotationPermissionRow.classList.toggle('hidden', !ownScreen); el.allowAnnotations.checked = state.annotationsEnabled;
   const allowed = canAnnotate(ownerId);
   el.annotationHelp.textContent = allowed ? 'Clique e arraste diretamente sobre a tela compartilhada.' : `${owner.name} desativou as anotações.`;
-  el.clearDrawings.disabled = !ownScreen;
+  const hasOwn = state.ownAnnotationIds.some((entry) => entry.ownerId === ownerId);
+  el.clearDrawings.disabled = !ownScreen && !hasOwn;
+  el.clearDrawings.querySelector('span:last-child').textContent = ownScreen ? 'Apagar tudo' : 'Apagar os meus';
   el.undoDrawing.disabled = !state.ownAnnotationIds.some((entry) => entry.ownerId === ownerId);
   el.annotationToolbar.classList.toggle('hidden', !state.annotationPanelOpen);
   el.callDraw.classList.toggle('active', state.annotationPanelOpen);
@@ -1548,7 +1638,6 @@ async function undoDrawing() {
 
 async function clearDrawings() {
   const ownerId = currentSharedOwner(); if (!ownerId) return;
-  if (ownerId !== state.clientId) { toast('Somente quem compartilha pode apagar todas as anotações.', 'error'); return; }
   try { await api('/api/annotation', { action: 'clear', shareOwnerId: ownerId }); }
   catch (error) { toast(error.message, 'error'); }
 }
@@ -1801,7 +1890,8 @@ el.openSpaces.addEventListener('click', () => { loadSpaces(); el.spacesOverlay.c
 el.closeSpaces.addEventListener('click', () => el.spacesOverlay.classList.add('hidden'));
 el.spacesOverlay.addEventListener('click', (event) => { if (event.target === el.spacesOverlay) el.spacesOverlay.classList.add('hidden'); });
 el.createSpace.addEventListener('click', createSpace);
-el.joinPrivateSpace.addEventListener('click', () => switchSpace(el.spaceInviteCode.value));
+el.joinPrivateSpace.addEventListener('click', joinSpaceByCode);
+el.spaceInviteCode.addEventListener('keydown', (event) => { if (event.key === 'Enter') { event.preventDefault(); joinSpaceByCode(); } });
 
 el.messageForm.addEventListener('submit', async (event) => { event.preventDefault(); await sendCurrentMessage(); });
 el.messages.addEventListener('scroll', () => {

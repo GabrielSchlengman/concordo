@@ -10,7 +10,7 @@
 <body>
   <div id="app" class="app">
     <aside class="brand-rail" aria-label="Alpendre">
-      <div class="brand-mark" title="Alpendre">A</div>
+      <div class="brand-mark" title="Alpendre"><img src="/assets/alpendre-macaco.png" alt="Alpendre"></div>
       <div class="rail-line"></div>
       <div id="space-list" class="space-list"></div>
       <button id="open-spaces" class="rail-room rail-add" aria-label="Explorar ou criar espaço" title="Explorar espaços">+</button>
@@ -18,25 +18,25 @@
 
     <aside class="sidebar">
       <header class="server-header">
-        <div><strong id="space-name">ALPENDRE</strong><small id="space-visibility">espaço público</small></div>
+        <div><strong id="space-name">ALPENDRE</strong><small id="space-visibility">Servidor: Alpendre</small></div>
         <span class="status-dot" title="Conectado"></span>
       </header>
 
       <div class="channel-scroll">
         <section class="channel-group">
           <h2>CANAIS DE TEXTO</h2>
-          <button class="channel text-channel active" data-text-room="geral"><span>#</span> geral</button>
-          <button class="channel text-channel" data-text-room="projetos"><span>#</span> projetos</button>
-          <button class="channel text-channel" data-text-room="cafe"><span>#</span> café</button>
+          <button class="channel text-channel active" data-text-room="geral"><span>#</span><span data-channel-label>geral</span></button>
+          <button class="channel text-channel" data-text-room="projetos"><span>#</span><span data-channel-label>projetos</span></button>
+          <button class="channel text-channel" data-text-room="cafe"><span>#</span><span data-channel-label>café</span></button>
         </section>
 
         <section class="channel-group voice-group">
           <h2>CANAIS DE VOZ</h2>
-          <button class="channel voice-channel" data-voice-room="lobby"><span data-icon="volume"></span> Lobby</button>
+          <button class="channel voice-channel" data-voice-room="lobby"><span data-icon="volume"></span><span data-channel-label>Lobby</span></button>
           <div class="voice-users" data-voice-users="lobby"></div>
-          <button class="channel voice-channel" data-voice-room="jogos"><span data-icon="volume"></span> Jogatina</button>
+          <button class="channel voice-channel" data-voice-room="jogos"><span data-icon="volume"></span><span data-channel-label>Jogatina</span></button>
           <div class="voice-users" data-voice-users="jogos"></div>
-          <button class="channel voice-channel" data-voice-room="musica"><span data-icon="volume"></span> Música</button>
+          <button class="channel voice-channel" data-voice-room="musica"><span data-icon="volume"></span><span data-channel-label>Música</span></button>
           <div class="voice-users" data-voice-users="musica"></div>
         </section>
       </div>
@@ -95,7 +95,6 @@
             <button class="annotation-tool active" data-draw-tool="pen" title="Caneta"><span data-icon="pencil"></span><small>Caneta</small></button>
             <button class="annotation-tool" data-draw-tool="eraser" title="Borracha"><span data-icon="eraser"></span><small>Borracha</small></button>
             <button class="annotation-tool" data-draw-tool="text" title="Escrever"><span data-icon="text"></span><small>Texto</small></button>
-            <button class="annotation-tool" data-draw-tool="pointer" title="Marcar onde clicar"><span data-icon="pointer"></span><small>Clique</small></button>
             <label class="draw-size">Tamanho<input id="draw-size" type="range" min="2" max="24" value="4"></label>
           </div>
           <div class="annotation-colors">
@@ -150,9 +149,10 @@
     <section class="spaces-card">
       <header><div><h1>Seus alpendres</h1><p>Entre num espaço público ou crie um convite privado para sua turma.</p></div><button id="close-spaces" class="icon-button" aria-label="Fechar"><span data-icon="close"></span></button></header>
       <div class="spaces-columns">
-        <section><h2>Espaços públicos</h2><div id="public-spaces" class="public-spaces"></div></section>
-        <section class="create-space"><h2>Criar um espaço</h2><label>Nome<input id="new-space-name" maxlength="40" placeholder="Ex.: Casa da galera"></label><label class="switch-row"><span><strong>Espaço privado</strong><small>Só entra quem tiver o código do convite.</small></span><input id="new-space-private" type="checkbox"><i></i></label><button id="create-space" class="primary-button">Criar espaço</button><div class="space-divider"><span>ou</span></div><label>Código do convite<input id="space-invite-code" maxlength="64" placeholder="priv-..."></label><button id="join-private-space" class="secondary-button">Entrar pelo código</button></section>
+        <section><h2>Servidores disponíveis</h2><div id="public-spaces" class="public-spaces"></div></section>
+        <section class="create-space"><h2>Criar um espaço</h2><label>Nome<input id="new-space-name" maxlength="40" placeholder="Ex.: Casa da galera"></label><label class="switch-row"><span><strong>Espaço privado</strong><small>Só entra quem tiver o código do convite.</small></span><input id="new-space-private" type="checkbox"><i></i></label><button id="create-space" class="primary-button">Criar espaço</button><div class="space-divider"><span>ou</span></div><label>Código do convite<input id="space-invite-code" maxlength="64" placeholder="ALP-XXXXXXXX"></label><button id="join-private-space" class="secondary-button">Entrar pelo código</button></section>
       </div>
+      <section id="space-management" class="space-management hidden"></section>
     </section>
   </div>
 

@@ -2,17 +2,19 @@
 
 Espaço de conversa para amigos com canais de texto e voz, chat com anexos, câmera, compartilhamento de tela e anotações sincronizadas. Funciona no navegador e como aplicativo para Windows.
 
-## O que a versão 1.0 faz
+## O que a versão 1.1 faz
 
-- Espaços públicos listados no explorador e espaços privados acessíveis por código de convite.
+- Servidor público Alpendre sempre disponível e servidores privados acessíveis apenas por código de convite.
+- Dono do servidor pode copiar o convite, remover participantes, renomear canais e excluir o servidor; convidados podem sair.
 - Isolamento de participantes, mensagens, chamadas, arquivos e desenhos entre espaços.
 - Chamada WebRTC dentro do Alpendre, sem abrir Jitsi ou outra página.
 - Microfone, câmera, compartilhamento, preview da própria tela, grade, foco e tela cheia.
 - Indicador de fala, linha de sensibilidade, retorno do microfone e processamento solicitado ao navegador.
-- Anotações com caneta, borracha, texto, ponteiro, desfazer e apagar tudo.
+- Anotações com caneta, borracha e texto; cada participante desfaz e apaga apenas o que criou, enquanto quem compartilha pode limpar tudo.
 - Chat com fotos, vídeos, áudios, PDF, texto e arquivos de até 8 MB; visualização, download e exclusão.
 - Uma guia ativa por navegador para evitar visitantes duplicados e eco.
 - Aplicativo desktop com seleção de tela e desenhos sobre a tela real compartilhada.
+- Identidade visual própria com o macaco amarelo do Alpendre.
 
 ## Rodar localmente
 
