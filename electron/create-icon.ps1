@@ -1,7 +1,7 @@
 Add-Type -AssemblyName System.Drawing
 
 $size = 256
-$sourcePath = Join-Path $PSScriptRoot '..\public\assets\alpendre-macaco.png'
+$sourcePath = Join-Path $PSScriptRoot '..\public\assets\alpendre-chimp-a.png'
 $sourceImage = [System.Drawing.Image]::FromFile($sourcePath)
 $bitmap = New-Object System.Drawing.Bitmap($size, $size, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
 $graphics = [System.Drawing.Graphics]::FromImage($bitmap)

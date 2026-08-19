@@ -84,7 +84,7 @@ test('entrega a interface real sem os botões fictícios antigos', async () => {
     assert.match(html, /Gravar mensagem de voz/);
     assert.match(html, /Anotações por cima da minha tela/);
     assert.doesNotMatch(html, /Marcar onde clicar/);
-    assert.match(html, /alpendre-macaco\.png/);
+    assert.match(html, /alpendre-chimp-a\.png/);
     assert.match(html, /Chamada dentro do Alpendre/);
     assert.match(html, /Servidores disponíveis/);
     assert.match(html, /Código do convite/);
