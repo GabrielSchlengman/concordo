@@ -74,7 +74,7 @@ const requestedSpace = new URLSearchParams(location.search).get('space');
 const initialSpaceId = String(requestedSpace || localStorage.getItem('alpendre-space') || 'alpendre').toLowerCase().replace(/[^a-z0-9_-]/g, '').slice(0, 64) || 'alpendre';
 
 const state = {
-  clientId, deviceId, tabId, sessionToken: '', tabActive: false, tabHeartbeat: null, tabStandbyTimer: null,
+  clientId, deviceId, identityId: localStorage.getItem('alpendre-auth-id') || deviceId, authToken: localStorage.getItem('alpendre-auth-token') || '', tabId, sessionToken: '', tabActive: false, tabHeartbeat: null, tabStandbyTimer: null,
   name: localStorage.getItem('alpendre-name') || localStorage.getItem('concord-name') || localStorage.getItem('lume-name') || 'Visitante',
   avatar: localStorage.getItem('alpendre-avatar') || localStorage.getItem('concord-avatar') || '',
   spaceId: initialSpaceId, space: { id: initialSpaceId, name: initialSpaceId === 'alpendre' ? 'Alpendre' : 'Espaço', visibility: initialSpaceId.startsWith('priv-') ? 'private' : 'public', role: initialSpaceId === 'alpendre' ? 'member' : 'visitor', channels: { text: { geral: 'geral', projetos: 'projetos', cafe: 'café' }, voice: { lobby: 'Lobby', jogos: 'Jogatina', musica: 'Música' } } }, spaces: [],
@@ -97,6 +97,7 @@ const state = {
 };
 
 const IDS = [
+  'welcome-overlay','guest-form','guest-name','account-form','account-name','account-email','account-password','signup-button','account-feedback',
   'room-title','chat-area','messages','new-messages','message-form','message-input','attachment-tray','attach-button','file-input','record-audio','recording-time','member-count','member-list','toggle-member-list',
   'space-list','open-spaces','space-name','space-visibility','spaces-overlay','close-spaces','public-spaces','new-space-name','new-space-private','create-space','space-invite-code','join-private-space','space-management',
   'call-stage','call-title','call-status','video-grid','reconnect-media','layout-button','view-menu','layout-grid','layout-focus','participant-video-button','self-view-button','screen-preview-button','fullscreen-button',
@@ -184,6 +185,34 @@ function rememberSpace(space) {
   localStorage.setItem('alpendre-saved-spaces', JSON.stringify(state.savedSpaces));
 }
 
+function selectWelcomeTab(tab) {
+  document.querySelectorAll('[data-welcome-tab]').forEach((button) => button.classList.toggle('active', button.dataset.welcomeTab === tab));
+  el.guestForm.classList.toggle('hidden', tab !== 'guest');
+  el.accountForm.classList.toggle('hidden', tab !== 'account');
+}
+
+async function enterAsGuest(event) {
+  event.preventDefault();
+  const name = el.guestName.value.trim();
+  if (!name) return;
+  state.name = name.slice(0, 32); localStorage.setItem('alpendre-name', state.name);
+  el.welcomeOverlay.classList.add('hidden'); await startApp();
+}
+
+async function accountAction(signup = false) {
+  const name = el.accountName.value.trim(); const email = el.accountEmail.value.trim(); const password = el.accountPassword.value;
+  el.accountFeedback.textContent = 'Aguarde um instante…';
+  try {
+    const response = await fetch(signup ? '/api/auth/signup' : '/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, email, password }) });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.error || 'Não foi possível entrar.');
+    state.name = result.user.name; localStorage.setItem('alpendre-name', state.name); localStorage.setItem('alpendre-account-email', result.user.email);
+    if (result.confirmationRequired) { el.accountFeedback.textContent = 'Conta criada. Confirme o e-mail e depois entre.'; return; }
+    state.authToken = result.accessToken; state.identityId = `auth-${result.user.id}`; localStorage.setItem('alpendre-auth-token', state.authToken); localStorage.setItem('alpendre-auth-id', state.identityId);
+    el.welcomeOverlay.classList.add('hidden'); await startApp();
+  } catch (error) { el.accountFeedback.textContent = error.message; }
+}
+
 function applySpaceChannels(space = state.space) {
   Object.assign(CHANNELS, space?.channels?.text || {}, space?.channels?.voice || {});
   document.querySelectorAll('[data-text-room]').forEach((button) => {
@@ -229,7 +258,7 @@ function renderSpaces() {
 
 async function loadSpaces() {
   try {
-    const query = new URLSearchParams({ clientId: state.clientId, deviceId: state.deviceId, sessionToken: state.sessionToken });
+    const query = new URLSearchParams({ clientId: state.clientId, deviceId: state.identityId, authToken: state.authToken, sessionToken: state.sessionToken });
     const response = await fetch(`/api/spaces?${query}`); const result = await response.json();
     if (response.ok) state.spaces = result.spaces || [];
   } catch { state.spaces = []; }
@@ -237,7 +266,7 @@ async function loadSpaces() {
 }
 
 async function resolveSpace(spaceId) {
-  const query = new URLSearchParams({ id: spaceId, clientId: state.clientId, deviceId: state.deviceId, sessionToken: state.sessionToken });
+  const query = new URLSearchParams({ id: spaceId, clientId: state.clientId, deviceId: state.identityId, authToken: state.authToken, sessionToken: state.sessionToken });
   const response = await fetch(`/api/space?${query}`);
   const result = await response.json().catch(() => ({}));
   if (!response.ok) {
@@ -440,8 +469,8 @@ async function activateTab(force = false) {
 function connectEvents() {
   if (!state.tabActive) return;
   state.eventSource?.close();
-  const queryDeviceId = DEV_MULTITAB ? `${state.deviceId}-${state.tabId}` : state.deviceId;
-  const query = new URLSearchParams({ space: state.spaceId, room: state.textRoom, clientId: state.clientId, deviceId: queryDeviceId, name: state.name });
+  const queryDeviceId = DEV_MULTITAB ? `${state.identityId}-${state.tabId}` : state.identityId;
+  const query = new URLSearchParams({ space: state.spaceId, room: state.textRoom, clientId: state.clientId, deviceId: queryDeviceId, name: state.name, authToken: state.authToken });
   const source = new EventSource(`/api/events?${query}`);
   state.eventSource = source;
   document.querySelector('.status-dot').style.background = '#ffd166';
@@ -2168,4 +2197,8 @@ async function startApp() {
   await activateTab(false);
 }
 
-startApp();
+document.querySelectorAll('[data-welcome-tab]').forEach((button) => button.addEventListener('click', () => selectWelcomeTab(button.dataset.welcomeTab)));
+el.guestName.value = state.name === 'Visitante' ? '' : state.name;
+el.guestForm.addEventListener('submit', enterAsGuest);
+el.accountForm.addEventListener('submit', (event) => { event.preventDefault(); accountAction(false); });
+el.signupButton.addEventListener('click', () => accountAction(true));

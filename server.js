@@ -70,6 +70,35 @@ function cleanToken(value) {
   return String(value || '').trim().replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 128);
 }
 
+function cleanEmail(value) {
+  const email = String(value || '').trim().toLowerCase().slice(0, 254);
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? email : '';
+}
+
+async function supabaseAuth(path, body) {
+  const baseUrl = String(process.env.SUPABASE_URL || '').replace(/\/$/, '');
+  const key = String(process.env.SUPABASE_SERVICE_ROLE_KEY || '');
+  if (!baseUrl || !key) throw Object.assign(new Error('As contas ainda não estão configuradas.'), { status: 503 });
+  const response = await fetch(`${baseUrl}/auth/v1/${path}`, {
+    method: 'POST', headers: { apikey: key, Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw Object.assign(new Error(data.msg || data.error_description || data.message || 'Não foi possível entrar.'), { status: response.status });
+  return data;
+}
+
+async function authenticatedIdentity(token) {
+  const baseUrl = String(process.env.SUPABASE_URL || '').replace(/\/$/, '');
+  const key = String(process.env.SUPABASE_SERVICE_ROLE_KEY || '');
+  if (!baseUrl || !key || !token) return '';
+  try {
+    const response = await fetch(`${baseUrl}/auth/v1/user`, { headers: { apikey: key, Authorization: `Bearer ${token}` } });
+    if (!response.ok) return '';
+    const user = await response.json();
+    return user?.id ? `auth-${cleanId(user.id)}` : '';
+  } catch { return ''; }
+}
+
 function cleanSpaceId(value, fallback = DEFAULT_SPACE_ID) {
   const id = cleanId(value, fallback).toLowerCase();
   return id || fallback;
@@ -644,6 +673,22 @@ function createServer() {
       return;
     }
 
+    if (request.method === 'POST' && requestUrl.pathname.startsWith('/api/auth/')) {
+      if (isRateLimited(request)) { json(response, 429, { error: 'Muitas tentativas. Aguarde um minuto.' }); return; }
+      try {
+        const body = await readJson(request);
+        const email = cleanEmail(body.email);
+        const password = String(body.password || '');
+        if (!email || password.length < 8 || password.length > 128) { json(response, 400, { error: 'Use um e-mail válido e senha de pelo menos 8 caracteres.' }); return; }
+        const result = requestUrl.pathname.endsWith('/signup')
+          ? await supabaseAuth('signup', { email, password, data: { display_name: cleanName(body.name || 'Membro') } })
+          : await supabaseAuth('token?grant_type=password', { email, password });
+        const user = result.user || result;
+        json(response, 200, { ok: true, confirmationRequired: !result.access_token, accessToken: result.access_token || '', user: { id: cleanId(user.id), email: cleanEmail(user.email), name: cleanName(user.user_metadata?.display_name || body.name || email.split('@')[0]) } });
+      } catch (error) { json(response, error.status || 400, { error: error.message || 'Não foi possível concluir.' }); }
+      return;
+    }
+
     if (request.method === 'GET' && requestUrl.pathname === '/api/spaces') {
       json(response, 200, { spaces: publicSpaces(viewerFromQuery(requestUrl)) });
       return;
@@ -694,7 +739,9 @@ function createServer() {
       const space = spaces.get(spaceId);
       const textRoom = cleanRoom(requestUrl.searchParams.get('room'));
       const clientId = cleanId(requestUrl.searchParams.get('clientId'));
-      const deviceId = cleanId(requestUrl.searchParams.get('deviceId'));
+      const requestedDeviceId = cleanId(requestUrl.searchParams.get('deviceId'));
+      const verifiedIdentity = await authenticatedIdentity(requestUrl.searchParams.get('authToken'));
+      const deviceId = verifiedIdentity || (requestedDeviceId.startsWith('auth-') ? '' : requestedDeviceId);
       const name = cleanName(requestUrl.searchParams.get('name'));
       const accessClient = clients.get(clientId);
       if (!space || !clientId || !deviceId || !canAccessSpace(space, accessClient, deviceId)) {
