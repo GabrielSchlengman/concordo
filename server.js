@@ -22,10 +22,17 @@ const annotationItems = new Map();
 let storedFileBytes = 0;
 let turnCache = null;
 
+const requestedJitsiDomain = String(process.env.JITSI_DOMAIN || 'meet.jit.si')
+  .trim().toLowerCase().replace(/^https?:\/\//, '').split('/')[0];
+const JITSI_DOMAIN = /^[a-z0-9.-]+$/.test(requestedJitsiDomain) ? requestedJitsiDomain : 'meet.jit.si';
+const CONFERENCE_NAMESPACE = String(process.env.CONCORD_CONFERENCE_NAMESPACE || crypto.randomBytes(18).toString('hex'))
+  .replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64);
+const JITSI_ORIGIN = `https://${JITSI_DOMAIN}`;
+
 const securityHeaders = {
-  'Content-Security-Policy': "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' https: wss:; style-src 'self' 'unsafe-inline'; script-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
+  'Content-Security-Policy': `default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' https: wss:; style-src 'self' 'unsafe-inline'; script-src 'self' ${JITSI_ORIGIN}; frame-src ${JITSI_ORIGIN}; frame-ancestors 'none'; base-uri 'self'; form-action 'self'`,
   'Cross-Origin-Opener-Policy': 'same-origin',
-  'Permissions-Policy': 'camera=(self), microphone=(self), display-capture=(self), speaker-selection=(self)',
+  'Permissions-Policy': `camera=(self "${JITSI_ORIGIN}"), microphone=(self "${JITSI_ORIGIN}"), display-capture=(self "${JITSI_ORIGIN}"), speaker-selection=(self "${JITSI_ORIGIN}")`,
   'Referrer-Policy': 'no-referrer',
   'X-Content-Type-Options': 'nosniff',
   'X-Frame-Options': 'DENY',
@@ -53,6 +60,15 @@ function cleanRoom(value, fallback = 'geral') {
 function cleanVoiceRoom(value) {
   const roomId = cleanId(value, '');
   return VOICE_ROOMS.has(roomId) ? roomId : null;
+}
+
+function conferenceConfig(voiceRoom) {
+  if (!voiceRoom) return null;
+  return {
+    provider: 'jitsi',
+    domain: JITSI_DOMAIN,
+    roomName: `Concord-${CONFERENCE_NAMESPACE}-${voiceRoom}`,
+  };
 }
 
 function cleanName(value) {
@@ -388,11 +404,8 @@ async function iceServers() {
   const provider = await providerIceServers();
   if (provider) return provider;
   return {
-    iceServers: [
-      { urls: ['stun:stun.l.google.com:19302', 'stun:freestun.net:3478'] },
-      { urls: ['turn:freestun.net:3478', 'turn:freestun.net:3478?transport=tcp'], username: 'free', credential: 'free' },
-    ],
-    relayReady: true, relayReliable: false, relayProvider: 'development',
+    iceServers: [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun.cloudflare.com:3478'] }],
+    relayReady: false, relayReliable: false, relayProvider: 'none',
   };
 }
 
@@ -407,7 +420,7 @@ function createServer() {
     }
 
     if (request.method === 'GET' && requestUrl.pathname === '/api/health') {
-      json(response, 200, { ok: true, name: 'Concord', version: '0.8.0' });
+      json(response, 200, { ok: true, name: 'Concord', version: '0.9.0' });
       return;
     }
 
@@ -619,6 +632,7 @@ function createServer() {
           json(response, 200, {
             ok: true,
             voiceRoom: client.voiceRoom,
+            conference: conferenceConfig(client.voiceRoom),
             users: client.voiceRoom ? voiceChannelsState()[client.voiceRoom] : [],
             annotations: client.voiceRoom ? [...annotationItems].flatMap(([ownerId, store]) => {
               const owner = clients.get(ownerId);

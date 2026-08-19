@@ -78,7 +78,7 @@ const state = {
   avatar: localStorage.getItem('concord-avatar') || '',
   textRoom: 'geral', voiceRoom: null, eventSource: null,
   textUsers: [], voiceChannels: { lobby: [], jogos: [], musica: [] }, callUsers: [],
-  settings: loadSettings(), peers: new Map(), iceServers: [], stunServers: [], relayServers: [], iceRelayReady: false, iceRelayReliable: false, relayProvider: '',
+  settings: loadSettings(), peers: new Map(), peerRebuilds: new Map(), iceServers: [], stunServers: [], relayServers: [], iceRelayReady: false, iceRelayReliable: false, relayProvider: '',
   audioStream: null, cameraStream: null, screenStream: null,
   micEnabled: true, deafened: false, annotationsEnabled: true,
   audioContext: null, audioMonitors: new Map(), voiceFrame: null,
@@ -89,11 +89,13 @@ const state = {
   knownCallUsers: new Map(), callRosterReady: false,
   pendingFiles: [], recorder: null, recordingStream: null, recordingStartedAt: 0, recordingTimer: null,
   desktopOverlayAvailable: false, mediaWarningAt: 0, unreadMessages: 0,
+  callProvider: null, conference: null, jitsiApi: null, jitsiReady: false, jitsiTimer: null,
+  jitsiVideoEnabled: false, jitsiScreenSharing: false, jitsiLeaving: false, jitsiLocalParticipantId: '',
 };
 
 const IDS = [
   'room-title','chat-area','messages','new-messages','message-form','message-input','attachment-tray','attach-button','file-input','record-audio','recording-time','member-count','member-list','toggle-member-list',
-  'call-stage','call-title','call-status','video-grid','reconnect-media','layout-button','view-menu','layout-grid','layout-focus','participant-video-button','self-view-button','screen-preview-button','fullscreen-button',
+  'call-stage','call-title','call-status','video-grid','reconnect-media','jitsi-open-external','jitsi-call','jitsi-container','jitsi-loading','layout-button','view-menu','layout-grid','layout-focus','participant-video-button','self-view-button','screen-preview-button','fullscreen-button',
   'annotation-toolbar','annotation-target','close-annotation','draw-size','undo-drawing','clear-drawings','annotation-permission-row','allow-annotations','annotation-help','call-mic','call-deafen','call-camera','call-screen','call-draw','leave-call',
   'connection-panel','connected-room','disconnect-voice','profile-button','profile-avatar','profile-fallback','self-name','self-status','bar-mic','bar-deafen','open-settings',
   'settings-overlay','close-settings','settings-avatar','settings-avatar-fallback','settings-name-display','display-name','avatar-input','remove-avatar','save-profile','profile-feedback',
@@ -166,11 +168,12 @@ function updateSelfUI() {
 }
 
 function mediaState() {
+  const hosted = state.callProvider === 'jitsi';
   return {
-    micEnabled: state.micEnabled && Boolean(state.audioStream?.getAudioTracks()[0]),
-    cameraEnabled: Boolean(state.cameraStream?.getVideoTracks()[0]),
-    screenSharing: Boolean(state.screenStream?.getVideoTracks()[0]),
-    annotationsEnabled: Boolean(state.annotationsEnabled && state.screenStream),
+    micEnabled: state.micEnabled && (hosted || Boolean(state.audioStream?.getAudioTracks()[0])),
+    cameraEnabled: hosted ? state.jitsiVideoEnabled : Boolean(state.cameraStream?.getVideoTracks()[0]),
+    screenSharing: hosted ? state.jitsiScreenSharing : Boolean(state.screenStream?.getVideoTracks()[0]),
+    annotationsEnabled: hosted ? false : Boolean(state.annotationsEnabled && state.screenStream),
     deafened: state.deafened,
   };
 }
@@ -208,7 +211,7 @@ function tabStandbyOverlay() {
 function stopLocalSessionForStandby() {
   state.eventSource?.close(); state.eventSource = null; state.sessionToken = '';
   state.voiceRoom = null; state.callUsers = [];
-  closeAllPeers(); stopLoopback(); stopCamera(); stopScreen(false);
+  unmountJitsi(); closeAllPeers(); stopLoopback(); stopCamera(); stopScreen(false);
   state.audioStream?.getTracks().forEach((track) => track.stop()); state.audioStream = null;
   state.audioMonitors.clear(); state.speaking.clear();
   renderCall(); renderVoiceChannels(); updateControlStates();
@@ -269,7 +272,11 @@ function connectEvents() {
         joinCall(payload.self.voiceRoom).catch(() => {});
       } else if (state.voiceRoom && payload.self?.voiceRoom !== state.voiceRoom) {
         api('/api/call', { action: 'join', voiceRoom: state.voiceRoom, media: mediaState() })
-          .then((result) => syncCallUsers(result.users || []))
+          .then((result) => {
+            state.conference = result.conference || state.conference;
+            if (state.conference?.provider === 'jitsi') mountJitsi(state.conference);
+            syncCallUsers(result.users || []);
+          })
           .catch((error) => toast(error.message, 'error'));
       }
     } else if (payload.type === 'presence') {
@@ -287,9 +294,9 @@ function connectEvents() {
       removeMessageFromView(payload.messageId);
     } else if (payload.type === 'tab-replaced') {
       enterTabStandby();
-    } else if (payload.type === 'signal') {
+    } else if (payload.type === 'signal' && state.callProvider !== 'jitsi') {
       await handleSignal(payload.from, payload.data);
-    } else if (payload.type === 'peer-left') {
+    } else if (payload.type === 'peer-left' && state.callProvider !== 'jitsi') {
       removePeer(payload.id);
     } else if (payload.type === 'annotation') {
       handleAnnotation(payload);
@@ -695,36 +702,213 @@ function addLocalTracks(peer) {
   }
 }
 
+function setJitsiLoading(title, detail, failed = false) {
+  const titleNode = el.jitsiLoading.querySelector('strong');
+  const detailNode = el.jitsiLoading.querySelector('small');
+  if (titleNode) titleNode.textContent = title;
+  if (detailNode) detailNode.textContent = detail;
+  el.jitsiCall.classList.toggle('failed', failed);
+  el.jitsiCall.classList.remove('ready', 'frame-loaded');
+}
+
+function jitsiMeetingUrl(conference = state.conference) {
+  if (!conference?.domain || !conference?.roomName) return '';
+  return `https://${conference.domain}/${encodeURIComponent(conference.roomName)}`;
+}
+
+function loadJitsiApi(domain) {
+  if (window.JitsiMeetExternalAPI) return Promise.resolve(window.JitsiMeetExternalAPI);
+  if (window.__concordJitsiPromise) return window.__concordJitsiPromise;
+  window.__concordJitsiPromise = new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    const timeout = setTimeout(() => reject(new Error('Tempo esgotado ao carregar a chamada.')), 20_000);
+    script.src = `https://${domain}/external_api.js`;
+    script.async = true;
+    script.dataset.concordJitsi = domain;
+    script.onload = () => {
+      clearTimeout(timeout);
+      if (window.JitsiMeetExternalAPI) resolve(window.JitsiMeetExternalAPI);
+      else reject(new Error('O serviço de chamada não ficou disponível.'));
+    };
+    script.onerror = () => { clearTimeout(timeout); reject(new Error('Não foi possível carregar o serviço de chamada.')); };
+    document.head.append(script);
+  }).catch((error) => {
+    window.__concordJitsiPromise = null;
+    throw error;
+  });
+  return window.__concordJitsiPromise;
+}
+
+async function applyJitsiDeafen() {
+  if (!state.jitsiApi || !state.jitsiReady) return;
+  try {
+    const participants = await state.jitsiApi.getParticipantsInfo();
+    const volume = state.deafened ? 0 : Math.min(1, state.settings.masterVolume / 100);
+    for (const participant of participants || []) {
+      const id = participant.participantId || participant.id;
+      if (id && id !== state.jitsiLocalParticipantId) state.jitsiApi.executeCommand('setParticipantVolume', id, volume);
+    }
+  } catch { /* o menu interno da chamada continua disponível */ }
+}
+
+function unmountJitsi(hangup = false) {
+  clearTimeout(state.jitsiTimer); state.jitsiTimer = null;
+  const apiInstance = state.jitsiApi;
+  state.jitsiApi = null; state.jitsiReady = false; state.jitsiLocalParticipantId = '';
+  state.jitsiVideoEnabled = false; state.jitsiScreenSharing = false;
+  if (apiInstance) {
+    state.jitsiLeaving = true;
+    try { if (hangup) apiInstance.executeCommand('hangup'); } catch { /* já saiu */ }
+    try { apiInstance.dispose(); } catch { /* já desmontado */ }
+    setTimeout(() => { state.jitsiLeaving = false; }, 600);
+  }
+  el.jitsiContainer.replaceChildren();
+  el.jitsiCall.classList.remove('ready', 'failed', 'frame-loaded');
+}
+
+async function mountJitsi(conference) {
+  if (!conference?.domain || !conference?.roomName || !state.voiceRoom) return;
+  const roomAtStart = state.voiceRoom;
+  unmountJitsi(false);
+  state.callProvider = 'jitsi'; state.conference = conference;
+  el.callStage.classList.add('jitsi-active');
+  el.jitsiCall.classList.remove('hidden'); el.jitsiOpenExternal.classList.remove('hidden');
+  setJitsiLoading('Preparando chamada estável…', 'Áudio, câmera e tela serão abertos com segurança dentro do Concord.');
+  el.callStatus.textContent = `${Math.max(1, state.callUsers.length)} na chamada · preparando mídia…`;
+  try {
+    const JitsiMeetExternalAPI = await loadJitsiApi(conference.domain);
+    if (state.voiceRoom !== roomAtStart || state.conference?.roomName !== conference.roomName) return;
+    const apiInstance = new JitsiMeetExternalAPI(conference.domain, {
+      roomName: conference.roomName,
+      parentNode: el.jitsiContainer,
+      width: '100%',
+      height: '100%',
+      lang: 'ptBR',
+      userInfo: { displayName: state.name },
+      onload: () => {
+        if (state.voiceRoom !== roomAtStart) return;
+        el.jitsiCall.classList.add('frame-loaded');
+        el.callStatus.textContent = `${Math.max(1, state.callUsers.length)} na chamada · inicie a sala se necessário`;
+      },
+      configOverwrite: {
+        prejoinPageEnabled: false,
+        prejoinConfig: { enabled: false },
+        disableDeepLinking: true,
+        enableWelcomePage: false,
+        startWithAudioMuted: !state.micEnabled,
+        startWithVideoMuted: true,
+        enableNoAudioDetection: true,
+        enableNoisyMicDetection: true,
+        disableInviteFunctions: true,
+        p2p: { enabled: false },
+        toolbarButtons: [
+          'microphone', 'camera', 'desktop', 'hangup', 'fullscreen', 'tileview',
+          'settings', 'videoquality', 'select-background', 'participants-pane', 'raisehand',
+        ],
+      },
+      interfaceConfigOverwrite: {
+        APP_NAME: 'Concord',
+        NATIVE_APP_NAME: 'Concord',
+        PROVIDER_NAME: 'Concord',
+        MOBILE_APP_PROMO: false,
+        DISABLE_JOIN_LEAVE_NOTIFICATIONS: true,
+        TILE_VIEW_MAX_COLUMNS: 5,
+      },
+    });
+    state.jitsiApi = apiInstance;
+    const iframe = apiInstance.getIFrame?.();
+    if (iframe) {
+      iframe.title = `Chamada ${CHANNELS[state.voiceRoom]}`;
+      iframe.allow = 'camera; microphone; display-capture; autoplay; clipboard-write; fullscreen';
+    }
+    apiInstance.addListener('videoConferenceJoined', (event) => {
+      if (state.jitsiApi !== apiInstance) return;
+      clearTimeout(state.jitsiTimer); state.jitsiTimer = null;
+      state.jitsiReady = true; state.jitsiLocalParticipantId = event.id || '';
+      el.jitsiCall.classList.add('ready'); el.jitsiCall.classList.remove('failed');
+      el.callStatus.textContent = `${Math.max(1, state.callUsers.length)} na chamada · mídia conectada`;
+      apiInstance.executeCommand('setNoiseSuppressionEnabled', { enabled: state.settings.noiseSuppression });
+      applyJitsiDeafen(); updateControlStates(); postMediaState();
+    });
+    apiInstance.addListener('audioMuteStatusChanged', ({ muted }) => {
+      const next = !muted;
+      if (state.micEnabled !== next) playCue(next ? 'unmute' : 'mute');
+      state.micEnabled = next; updateControlStates(); postMediaState();
+    });
+    apiInstance.addListener('videoMuteStatusChanged', ({ muted }) => {
+      state.jitsiVideoEnabled = !muted; updateControlStates(); postMediaState();
+    });
+    apiInstance.addListener('screenSharingStatusChanged', ({ on }) => {
+      state.jitsiScreenSharing = Boolean(on);
+      if (on) playCue('screen');
+      updateControlStates(); postMediaState();
+    });
+    apiInstance.addListener('participantJoined', ({ id }) => {
+      if (state.deafened && id) apiInstance.executeCommand('setParticipantVolume', id, 0);
+    });
+    apiInstance.addListener('browserSupport', ({ supported }) => {
+      if (!supported) toast('Este navegador não suporta a chamada estável. Use a opção Nova janela.', 'error');
+    });
+    apiInstance.addListener('micError', () => toast('O microfone foi bloqueado. Libere a permissão dentro da chamada.', 'error'));
+    apiInstance.addListener('cameraError', () => toast('A câmera foi bloqueada. Confira a permissão do navegador.', 'error'));
+    apiInstance.addListener('readyToClose', () => {
+      if (!state.jitsiLeaving && state.voiceRoom) leaveCall(true);
+    });
+    state.jitsiTimer = setTimeout(() => {
+      if (state.jitsiApi !== apiInstance || state.jitsiReady || el.jitsiCall.classList.contains('frame-loaded')) return;
+      setJitsiLoading('A chamada demorou para abrir', 'Clique em Reabrir ou use Nova janela. O chat e os canais continuam funcionando.', true);
+      el.callStatus.textContent = `${Math.max(1, state.callUsers.length)} na chamada · mídia ainda não abriu`;
+    }, 25_000);
+  } catch (error) {
+    setJitsiLoading('Não foi possível abrir a chamada aqui', 'Use Nova janela para entrar diretamente ou clique em Reabrir.', true);
+    el.callStatus.textContent = `${Math.max(1, state.callUsers.length)} na chamada · chamada indisponível`;
+    toast(error.message || 'Não foi possível abrir a chamada estável.', 'error');
+  }
+}
+
+function openJitsiInNewWindow() {
+  const url = jitsiMeetingUrl();
+  if (!url) return;
+  const opened = window.open(url, '_blank', 'noopener,noreferrer');
+  if (!opened) toast('O navegador bloqueou a nova janela. Permita pop-ups para o Concord.', 'error');
+}
+
 async function joinCall(roomId) {
   if (state.voiceRoom === roomId) return;
   getAudioContext();
-  try {
-    await ensureMicrophone();
-  } catch (error) {
-    state.micEnabled = false;
-    toast(error.name === 'NotAllowedError' ? 'Permita o microfone no navegador para falar.' : 'Não consegui abrir seu microfone.', 'error');
-  }
-  if (state.voiceRoom) closeAllPeers();
+  if (state.voiceRoom) { unmountJitsi(true); closeAllPeers(); }
   try {
     const result = await api('/api/call', { action: 'join', voiceRoom: roomId, media: mediaState() });
     state.voiceRoom = roomId;
+    state.conference = result.conference || null;
+    state.callProvider = state.conference?.provider === 'jitsi' ? 'jitsi' : 'direct';
     state.callUsers = result.users || [];
     state.annotations.clear(); state.pinnedUserId = null; state.autoFocusedShareId = null;
     (result.annotations || []).forEach((snapshot) => state.annotations.set(snapshot.shareOwnerId, snapshot.items || []));
     state.knownCallUsers.clear(); state.callRosterReady = false;
     renderCall(); renderVoiceChannels(); updateControlStates();
     syncCallUsers(state.callUsers);
+    if (state.callProvider === 'jitsi') mountJitsi(state.conference);
+    else {
+      try { await ensureMicrophone(); }
+      catch (error) {
+        state.micEnabled = false;
+        toast(error.name === 'NotAllowedError' ? 'Permita o microfone no navegador para falar.' : 'Não consegui abrir seu microfone.', 'error');
+      }
+    }
     playCue('join');
     toast(`Você entrou em ${CHANNELS[roomId]}.`);
   } catch (error) { toast(error.message, 'error'); }
 }
 
-async function leaveCall() {
+async function leaveCall(fromProvider = false) {
   if (!state.voiceRoom) return;
   const oldRoom = state.voiceRoom;
   playCue('leave');
+  unmountJitsi(!fromProvider);
   try { await api('/api/call', { action: 'leave' }); } catch { /* limpar localmente mesmo assim */ }
   state.voiceRoom = null; state.callUsers = []; state.pinnedUserId = null; state.autoFocusedShareId = null;
+  state.callProvider = null; state.conference = null;
   state.knownCallUsers.clear(); state.callRosterReady = false; state.annotationPanelOpen = false;
   closeAllPeers(); stopCamera(); stopScreen(false); stopLoopback();
   state.audioStream?.getTracks().forEach((track) => track.stop()); state.audioStream = null;
@@ -747,7 +931,8 @@ function syncCallUsers(users) {
   state.knownCallUsers = nextUsers; state.callRosterReady = true;
   state.callUsers = users;
   const validIds = new Set(users.map((user) => user.id));
-  for (const user of users) if (user.id !== state.clientId) createPeer(user.id);
+  if (state.callProvider === 'jitsi') closeAllPeers();
+  else for (const user of users) if (user.id !== state.clientId) createPeer(user.id);
   for (const id of state.peers.keys()) if (!validIds.has(id)) removePeer(id);
   renderCall(); renderMembers(); renderVoiceChannels();
 }
@@ -755,6 +940,12 @@ function syncCallUsers(users) {
 function updateCallConnectionStatus() {
   if (!state.voiceRoom) return;
   const total = Math.max(1, state.callUsers.length);
+  if (state.callProvider === 'jitsi') {
+    el.callStatus.textContent = state.jitsiReady
+      ? `${total} na chamada · mídia conectada`
+      : el.jitsiCall.classList.contains('frame-loaded') ? `${total} na chamada · inicie a sala se necessário` : `${total} na chamada · preparando mídia…`;
+    return;
+  }
   const remoteCount = state.callUsers.filter((user) => user.id !== state.clientId).length;
   const connectedCount = [...state.peers.values()].filter((peer) => peer.pc.connectionState === 'connected').length;
   const failedCount = [...state.peers.values()].filter((peer) => peer.timedOut).length;
@@ -767,17 +958,20 @@ function updateCallConnectionStatus() {
 function createPeer(userId) {
   if (!state.voiceRoom || userId === state.clientId || state.peers.has(userId)) return state.peers.get(userId);
   const pc = new RTCPeerConnection({
-    iceServers: state.settings.protectIp ? state.iceServers : state.stunServers,
-    iceCandidatePoolSize: 10,
+    iceServers: state.iceServers,
+    iceCandidatePoolSize: 4,
     iceTransportPolicy: state.settings.protectIp ? 'relay' : 'all',
+    bundlePolicy: 'max-bundle',
+    rtcpMuxPolicy: 'require',
   });
   const peer = {
     id: userId, pc, polite: state.clientId.localeCompare(userId) > 0,
     initiator: state.clientId.localeCompare(userId) < 0,
     makingOffer: false, ignoreOffer: false, settingRemoteAnswer: false,
     pendingCandidates: [], remoteStreams: new Map(), description: {},
-    audioNodes: [], reconnectAttempts: 0, disconnectTimer: null, relayTimer: null, timeoutTimer: null,
-    negotiationQueued: false, recovering: false, relayEscalated: state.settings.protectIp, timedOut: false,
+    audioNodes: [], reconnectAttempts: 0, disconnectTimer: null, retryTimer: null, rebuildTimer: null, timeoutTimer: null,
+    negotiationQueued: false, recovering: false, relayEscalated: true, timedOut: false,
+    autoRebuilds: state.peerRebuilds.get(userId) || 0,
   };
   state.peers.set(userId, peer);
   addLocalTracks(peer);
@@ -790,14 +984,20 @@ function createPeer(userId) {
   pc.onconnectionstatechange = () => {
     const status = pc.connectionState;
     if (status === 'connected') {
-      peer.reconnectAttempts = 0; peer.timedOut = false; clearTimeout(peer.disconnectTimer); clearTimeout(peer.relayTimer); clearTimeout(peer.timeoutTimer);
+      peer.reconnectAttempts = 0; peer.timedOut = false; state.peerRebuilds.delete(userId);
+      clearTimeout(peer.disconnectTimer); clearTimeout(peer.retryTimer); clearTimeout(peer.rebuildTimer); clearTimeout(peer.timeoutTimer);
+      peer.disconnectTimer = null; peer.retryTimer = null; peer.rebuildTimer = null; peer.timeoutTimer = null;
       updateCallConnectionStatus();
     } else if (status === 'failed') {
+      if (!peer.timeoutTimer) schedulePeerStages(peer);
       recoverPeer(peer);
     } else if (status === 'disconnected') {
       clearTimeout(peer.disconnectTimer);
       peer.disconnectTimer = setTimeout(() => {
-        if (pc.connectionState === 'disconnected') recoverPeer(peer);
+        if (pc.connectionState === 'disconnected') {
+          if (!peer.timeoutTimer) schedulePeerStages(peer);
+          recoverPeer(peer);
+        }
       }, 6000);
     }
     renderVideoGrid();
@@ -826,18 +1026,31 @@ async function negotiatePeer(peer, { iceRestart = false } = {}) {
 }
 
 function schedulePeerStages(peer) {
-  clearTimeout(peer.relayTimer); clearTimeout(peer.timeoutTimer);
-  if (!peer.relayEscalated && state.relayServers.length) {
-    peer.relayTimer = setTimeout(() => escalatePeerToRelay(peer), 6000);
+  clearTimeout(peer.retryTimer); clearTimeout(peer.rebuildTimer); clearTimeout(peer.timeoutTimer);
+  peer.retryTimer = setTimeout(() => {
+    peer.retryTimer = null;
+    if (state.peers.get(peer.id) === peer && !['connected', 'closed'].includes(peer.pc.connectionState)) recoverPeer(peer);
+  }, 8000);
+  if (peer.autoRebuilds < 1) {
+    peer.rebuildTimer = setTimeout(() => autoRebuildPeer(peer), 20_000);
   }
   peer.timeoutTimer = setTimeout(() => {
     if (state.peers.get(peer.id) !== peer || ['connected', 'closed'].includes(peer.pc.connectionState)) return;
     peer.timedOut = true; peer.recovering = false; updateCallConnectionStatus(); renderVideoGrid();
     if (Date.now() - state.mediaWarningAt > 20_000) {
       state.mediaWarningAt = Date.now();
-      toast(state.relayServers.length ? 'A rede não concluiu a mídia. Use Reconectar para tentar de novo.' : 'A conexão direta falhou e não há uma retransmissão TURN confiável configurada.', 'error');
+      toast(state.relayServers.length ? 'A rede não concluiu a mídia mesmo após a recuperação. Use Reconectar para tentar de novo.' : 'A conexão direta falhou e não há retransmissão TURN disponível.', 'error');
     }
-  }, 18_000);
+  }, peer.autoRebuilds ? 30_000 : 32_000);
+}
+
+function autoRebuildPeer(peer) {
+  if (state.peers.get(peer.id) !== peer || ['connected', 'closed'].includes(peer.pc.connectionState)) return;
+  const userId = peer.id;
+  state.peerRebuilds.set(userId, peer.autoRebuilds + 1);
+  el.callStatus.textContent = `${Math.max(1, state.callUsers.length)} na chamada · reconstruindo a rota de mídia…`;
+  removePeer(userId, true);
+  setTimeout(() => { if (state.voiceRoom && state.callUsers.some((user) => user.id === userId)) createPeer(userId); }, 350);
 }
 
 async function escalatePeerToRelay(peer, notifyRemote = true) {
@@ -852,11 +1065,9 @@ async function escalatePeerToRelay(peer, notifyRemote = true) {
 async function recoverPeer(peer) {
   if (!state.peers.has(peer.id) || !state.voiceRoom || peer.recovering) return;
   peer.recovering = true;
-  schedulePeerStages(peer);
   el.callStatus.textContent = `${Math.max(1, state.callUsers.length)} na chamada · recuperando áudio e vídeo…`;
   try {
-    if (!peer.relayEscalated && state.relayServers.length) await escalatePeerToRelay(peer);
-    else if (!peer.reconnectAttempts) {
+    if (!peer.reconnectAttempts) {
       peer.reconnectAttempts = 1;
       if (peer.initiator) await negotiatePeer(peer, { iceRestart: true });
       else await sendSignal(peer.id, { restartRequest: true });
@@ -994,16 +1205,16 @@ function applyRemoteAudio(userId = null) {
   }
 }
 
-function removePeer(userId) {
+function removePeer(userId, preserveRebuild = false) {
   const peer = state.peers.get(userId); if (!peer) return;
-  clearTimeout(peer.disconnectTimer); clearTimeout(peer.relayTimer); clearTimeout(peer.timeoutTimer);
+  clearTimeout(peer.disconnectTimer); clearTimeout(peer.retryTimer); clearTimeout(peer.rebuildTimer); clearTimeout(peer.timeoutTimer);
   peer.audioNodes.forEach((node) => {
     try { node.source?.disconnect(); node.gain?.disconnect(); } catch { /* já removido */ }
     node.audio.srcObject = null; node.audio.remove();
   });
   state.audioMonitors.delete(userId); state.speaking.delete(userId);
   peer.pc.ontrack = null; peer.pc.onicecandidate = null; peer.pc.close();
-  state.peers.delete(userId); renderVideoGrid();
+  state.peers.delete(userId); if (!preserveRebuild) state.peerRebuilds.delete(userId); renderVideoGrid();
 }
 
 function closeAllPeers() {
@@ -1012,6 +1223,10 @@ function closeAllPeers() {
 
 async function rebuildPeerConnections() {
   if (!state.voiceRoom) return;
+  if (state.callProvider === 'jitsi') {
+    mountJitsi(state.conference);
+    return;
+  }
   await loadIceServers();
   const peers = state.callUsers.filter((user) => user.id !== state.clientId).map((user) => user.id);
   closeAllPeers(); peers.forEach(createPeer);
@@ -1019,6 +1234,11 @@ async function rebuildPeerConnections() {
 }
 
 async function toggleMicrophone() {
+  if (state.callProvider === 'jitsi') {
+    if (!state.jitsiApi) { toast('A chamada ainda está abrindo.'); return; }
+    state.jitsiApi.executeCommand('toggleAudio');
+    return;
+  }
   if (!state.audioStream) {
     try { await ensureMicrophone(); state.micEnabled = true; }
     catch { toast('Não consegui acessar o microfone. Confira a permissão.', 'error'); return; }
@@ -1028,13 +1248,20 @@ async function toggleMicrophone() {
   updateControlStates(); postMediaState();
 }
 
-function toggleDeafen() {
+async function toggleDeafen() {
   state.deafened = !state.deafened;
   playCue(state.deafened ? 'deafen' : 'undeafen');
-  applyRemoteAudio(); updateControlStates(); postMediaState();
+  if (state.callProvider === 'jitsi') await applyJitsiDeafen();
+  else applyRemoteAudio();
+  updateControlStates(); postMediaState();
 }
 
 async function toggleCamera() {
+  if (state.callProvider === 'jitsi') {
+    if (!state.jitsiApi) { toast('A chamada ainda está abrindo.'); return; }
+    state.jitsiApi.executeCommand('toggleVideo');
+    return;
+  }
   if (state.cameraStream) { stopCamera(); return; }
   if (!state.voiceRoom) { toast('Entre em um canal de voz primeiro.'); return; }
   const height = Number(state.settings.cameraQuality) || 720;
@@ -1062,6 +1289,11 @@ function stopCamera() {
 }
 
 async function toggleScreen() {
+  if (state.callProvider === 'jitsi') {
+    if (!state.jitsiApi) { toast('A chamada ainda está abrindo.'); return; }
+    state.jitsiApi.executeCommand('toggleShareScreen');
+    return;
+  }
   if (state.screenStream) { stopScreen(); return; }
   if (!state.voiceRoom) { toast('Entre em um canal de voz primeiro.'); return; }
   if (!navigator.mediaDevices?.getDisplayMedia) { toast('Compartilhamento de tela não é suportado aqui.', 'error'); return; }
@@ -1410,6 +1642,10 @@ function updateAnnotationPanel() {
 }
 
 function toggleAnnotationPanel() {
+  if (state.callProvider === 'jitsi') {
+    toast('As anotações sobre a tela não estão disponíveis no modo de chamada estável.');
+    return;
+  }
   if (!currentSharedOwner()) { toast('Ainda não há uma tela compartilhada para anotar.'); return; }
   state.annotationPanelOpen = !state.annotationPanelOpen; updateAnnotationPanel(); renderVideoGrid(); updateControlStates();
 }
@@ -1441,10 +1677,15 @@ function setAnnotationPermission(enabled) {
 function renderCall() {
   const active = Boolean(state.voiceRoom);
   el.callStage.classList.toggle('hidden', !active); el.connectionPanel.classList.toggle('hidden', !active);
+  const hosted = active && state.callProvider === 'jitsi';
+  el.callStage.classList.toggle('jitsi-active', hosted);
+  el.jitsiCall.classList.toggle('hidden', !hosted);
+  el.jitsiOpenExternal.classList.toggle('hidden', !hosted);
   if (!active) return;
   el.callTitle.textContent = CHANNELS[state.voiceRoom]; el.connectedRoom.textContent = CHANNELS[state.voiceRoom];
   updateCallConnectionStatus();
-  updateSelfUI(); renderVideoGrid();
+  updateSelfUI();
+  if (!hosted) renderVideoGrid();
 }
 
 function startLocalMeter() {
@@ -1482,6 +1723,12 @@ function startVoiceMeterLoop() {
 }
 
 function updateProcessingStatus(track = state.audioStream?.getAudioTracks()[0]) {
+  if (state.callProvider === 'jitsi' && state.voiceRoom) {
+    el.noiseStatus.textContent = state.settings.noiseSuppression ? 'Ativo na chamada estável' : 'Desligado';
+    el.echoStatus.textContent = 'Gerenciado pela chamada estável';
+    el.gainStatus.textContent = 'Gerenciado pela chamada estável';
+    return;
+  }
   const supported = navigator.mediaDevices?.getSupportedConstraints?.() || {};
   const active = track?.getSettings?.() || {};
   const rows = [
@@ -1499,6 +1746,12 @@ function updateProcessingStatus(track = state.audioStream?.getAudioTracks()[0]) 
 }
 
 async function applyAudioProcessing() {
+  if (state.callProvider === 'jitsi' && state.jitsiApi) {
+    state.jitsiApi.executeCommand('setNoiseSuppressionEnabled', { enabled: state.settings.noiseSuppression });
+    updateProcessingStatus();
+    toast('A configuração foi enviada para a chamada estável.');
+    return;
+  }
   const track = state.audioStream?.getAudioTracks()[0];
   if (!track) { updateProcessingStatus(); return; }
   try {
@@ -1564,7 +1817,8 @@ function stopLoopback() {
 }
 
 function updateControlStates() {
-  const hasMic = state.micEnabled && Boolean(state.audioStream?.getAudioTracks()[0]);
+  const hosted = state.callProvider === 'jitsi';
+  const hasMic = state.micEnabled && (hosted || Boolean(state.audioStream?.getAudioTracks()[0]));
   [el.barMic, el.callMic].forEach((button) => {
     button.classList.toggle('off', !hasMic); button.innerHTML = iconSvg(hasMic ? 'mic' : 'mic-off');
     button.title = hasMic ? 'Desativar microfone' : 'Ativar microfone';
@@ -1573,9 +1827,11 @@ function updateControlStates() {
     button.classList.toggle('off', state.deafened); button.innerHTML = iconSvg(state.deafened ? 'volume-off' : 'headphones');
     button.title = state.deafened ? 'Ouvir novamente' : 'Silenciar fone';
   });
-  el.callCamera.classList.toggle('active', Boolean(state.cameraStream));
-  el.callCamera.innerHTML = iconSvg(state.cameraStream ? 'video' : 'video-off');
-  el.callScreen.classList.toggle('active', Boolean(state.screenStream));
+  const cameraEnabled = hosted ? state.jitsiVideoEnabled : Boolean(state.cameraStream);
+  const screenEnabled = hosted ? state.jitsiScreenSharing : Boolean(state.screenStream);
+  el.callCamera.classList.toggle('active', cameraEnabled);
+  el.callCamera.innerHTML = iconSvg(cameraEnabled ? 'video' : 'video-off');
+  el.callScreen.classList.toggle('active', screenEnabled);
   updateAnnotationPanel();
   el.participantVideoButton.classList.toggle('active', state.settings.participantVideo);
   el.selfViewButton.classList.toggle('active', state.settings.selfView);
@@ -1639,6 +1895,7 @@ async function saveProfile() {
     const result = await api('/api/profile', { name, avatar });
     state.name = result.user?.name || name; state.avatar = result.user?.avatar || avatar; state.pendingAvatar = null;
     localStorage.setItem('concord-name', state.name); localStorage.setItem('concord-avatar', state.avatar);
+    state.jitsiApi?.executeCommand('displayName', state.name);
     updateSelfUI(); renderPresence(); renderVideoGrid();
     el.profileFeedback.textContent = 'Perfil salvo.'; setTimeout(() => { el.profileFeedback.textContent = ''; }, 2200);
   } catch (error) { toast(error.message, 'error'); }
@@ -1649,6 +1906,14 @@ function showContextMenu(event, userId) {
   event.preventDefault(); const user = getUser(userId); const preference = userPreference(userId);
   el.contextMenu.replaceChildren();
   const head = document.createElement('div'); head.className = 'context-head'; head.textContent = user.name; el.contextMenu.append(head);
+  if (state.callProvider === 'jitsi') {
+    const manage = contextAction('Abrir controles da chamada', 'members', () => state.jitsiApi?.executeCommand('toggleParticipantsPane', true));
+    el.contextMenu.append(manage);
+    el.contextMenu.classList.remove('hidden');
+    const hostedX = Math.min(event.clientX, innerWidth - 245); const hostedY = Math.min(event.clientY, innerHeight - el.contextMenu.offsetHeight - 8);
+    el.contextMenu.style.left = `${Math.max(5, hostedX)}px`; el.contextMenu.style.top = `${Math.max(5, hostedY)}px`;
+    return;
+  }
   const mute = contextAction(preference.muted ? 'Desmutar para mim' : 'Silenciar para mim', preference.muted ? 'volume' : 'volume-off', () => setUserPreference(userId, { muted: !preference.muted }));
   const hide = contextAction(preference.hideVideo ? 'Mostrar vídeo' : 'Ocultar vídeo', preference.hideVideo ? 'eye' : 'video-off', () => setUserPreference(userId, { hideVideo: !preference.hideVideo }));
   const focus = contextAction(state.pinnedUserId === userId ? 'Voltar para grade' : 'Priorizar participante', 'fullscreen', () => focusUser(userId));
@@ -1705,15 +1970,18 @@ el.messageInput.addEventListener('paste', (event) => {
 [el.barDeafen, el.callDeafen].forEach((button) => button.addEventListener('click', toggleDeafen));
 el.callCamera.addEventListener('click', toggleCamera); el.callScreen.addEventListener('click', toggleScreen); el.callDraw.addEventListener('click', toggleAnnotationPanel);
 el.reconnectMedia.addEventListener('click', rebuildPeerConnections);
-el.leaveCall.addEventListener('click', leaveCall); el.disconnectVoice.addEventListener('click', leaveCall);
+el.jitsiOpenExternal.addEventListener('click', openJitsiInNewWindow);
+el.leaveCall.addEventListener('click', () => leaveCall()); el.disconnectVoice.addEventListener('click', () => leaveCall());
 el.layoutButton.addEventListener('click', (event) => {
   event.stopPropagation(); el.viewMenu.classList.toggle('hidden');
 });
 el.layoutGrid.addEventListener('click', () => {
+  if (state.callProvider === 'jitsi' && state.jitsiApi) state.jitsiApi.executeCommand('setTileView', true);
   state.layout = 'grid'; state.pinnedUserId = null; state.autoFocusedShareId = null;
   applyLayoutState(); el.viewMenu.classList.add('hidden');
 });
 el.layoutFocus.addEventListener('click', () => {
+  if (state.callProvider === 'jitsi' && state.jitsiApi) state.jitsiApi.executeCommand('setTileView', false);
   state.layout = 'focus'; applyLayoutState(); el.viewMenu.classList.add('hidden');
 });
 el.fullscreenButton.addEventListener('click', async () => {
@@ -1762,7 +2030,9 @@ el.saveProfile.addEventListener('click', saveProfile);
 
 el.masterVolume.addEventListener('input', () => {
   state.settings.masterVolume = Number(el.masterVolume.value); el.masterVolumeValue.value = `${state.settings.masterVolume}%`;
-  saveSettings(); applyRemoteAudio(); el.micLoopbackAudio.volume = Math.min(1, state.settings.masterVolume / 100);
+  saveSettings();
+  if (state.callProvider === 'jitsi') applyJitsiDeafen(); else applyRemoteAudio();
+  el.micLoopbackAudio.volume = Math.min(1, state.settings.masterVolume / 100);
 });
 el.micSensitivity.addEventListener('input', () => {
   state.settings.sensitivity = Number(el.micSensitivity.value); el.sensitivityValue.value = `${state.settings.sensitivity}%`;
@@ -1770,13 +2040,18 @@ el.micSensitivity.addEventListener('input', () => {
 });
 el.inputDevice.addEventListener('change', async () => {
   state.settings.microphoneId = el.inputDevice.value; saveSettings();
+  if (state.callProvider === 'jitsi') { toast('Troque o microfone pelas configurações dentro da chamada.'); return; }
   try { await ensureMicrophone(true); postMediaState(); } catch { toast('Não consegui trocar o microfone.', 'error'); }
 });
 el.outputDevice.addEventListener('change', () => {
-  state.settings.speakerId = el.outputDevice.value; saveSettings(); setOutputDevice(state.settings.speakerId);
+  state.settings.speakerId = el.outputDevice.value; saveSettings();
+  if (state.callProvider === 'jitsi') toast('Troque a saída de áudio pelas configurações dentro da chamada.');
+  else setOutputDevice(state.settings.speakerId);
 });
 el.cameraDevice.addEventListener('change', async () => {
-  state.settings.cameraId = el.cameraDevice.value; saveSettings(); if (state.cameraStream) { stopCamera(); await toggleCamera(); }
+  state.settings.cameraId = el.cameraDevice.value; saveSettings();
+  if (state.callProvider === 'jitsi') { toast('Troque a câmera pelas configurações dentro da chamada.'); return; }
+  if (state.cameraStream) { stopCamera(); await toggleCamera(); }
 });
 el.loopbackButton.addEventListener('click', toggleLoopback);
 el.protectIp.addEventListener('change', () => {

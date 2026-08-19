@@ -59,14 +59,16 @@ async function closeEvents(...sessions) {
   sessions.forEach((session) => session.controller.abort());
 }
 
-test('publica a versão 0.8 e os servidores ICE', async () => {
+test('publica a versão 0.9.0 sem depender de um relay público compartilhado', async () => {
   await withServer(async (baseUrl) => {
     const health = await fetch(`${baseUrl}/api/health`);
-    assert.deepEqual(await health.json(), { ok: true, name: 'Concord', version: '0.8.0' });
+    assert.deepEqual(await health.json(), { ok: true, name: 'Concord', version: '0.9.0' });
     assert.equal(health.headers.get('x-content-type-options'), 'nosniff');
+    assert.match(health.headers.get('content-security-policy'), /frame-src https:\/\/meet\.jit\.si/);
     const ice = await (await fetch(`${baseUrl}/api/ice`)).json();
-    assert.ok(ice.iceServers.some((server) => String(server.urls).includes('turn:')));
-    assert.equal(ice.relayReady, true);
+    assert.equal(ice.iceServers.some((server) => String(server.urls).includes('openrelay.metered.ca')), false);
+    assert.equal(ice.relayReady, false);
+    assert.equal(ice.relayProvider, 'none');
   });
 });
 
@@ -81,17 +83,22 @@ test('entrega a interface real sem os botões fictícios antigos', async () => {
     assert.match(html, /Gravar mensagem de voz/);
     assert.match(html, /Anotações por cima da minha tela/);
     assert.match(html, /Marcar onde clicar/);
+    assert.match(html, /Chamada estável ativada/);
+    assert.match(html, /jitsi-container/);
     assert.doesNotMatch(html, /Adicionar servidor|Anexar arquivo/);
   });
 });
 
-test('mantém mídia compatível e prepara a camada segura de anotação do aplicativo', () => {
+test('integra a chamada hospedada e mantém a camada segura do aplicativo', () => {
   const app = fs.readFileSync(path.join(__dirname, 'public', 'app.js'), 'utf8');
   const main = fs.readFileSync(path.join(__dirname, 'electron', 'main.js'), 'utf8');
   const overlay = fs.readFileSync(path.join(__dirname, 'electron', 'annotation-overlay.js'), 'utf8');
   assert.match(app, /protectIp: false/);
   assert.match(app, /className = 'remote-call-audio'/);
+  assert.match(app, /JitsiMeetExternalAPI/);
+  assert.match(app, /toggleShareScreen/);
   assert.match(app, /startAnnotationOverlay/);
+  assert.match(main, /JITSI_ORIGIN/);
   assert.match(main, /setIgnoreMouseEvents\(true/);
   assert.match(main, /setContentProtection\(true\)/);
   assert.match(overlay, /item\.tool === 'pointer'/);
@@ -104,8 +111,11 @@ test('mantém texto e voz separados, encaminha sinais e sincroniza desenhos', as
     await nextEvent(gabriel, (event) => event.type === 'hello');
     await nextEvent(amigo, (event) => event.type === 'hello');
 
-    await post(baseUrl, '/api/call', { clientId: 'gabriel-1', action: 'join', voiceRoom: 'lobby', media: { micEnabled: true } });
-    await post(baseUrl, '/api/call', { clientId: 'amigo-1', action: 'join', voiceRoom: 'lobby', media: { micEnabled: true } });
+    const gabrielJoin = await post(baseUrl, '/api/call', { clientId: 'gabriel-1', action: 'join', voiceRoom: 'lobby', media: { micEnabled: true } });
+    const amigoJoin = await post(baseUrl, '/api/call', { clientId: 'amigo-1', action: 'join', voiceRoom: 'lobby', media: { micEnabled: true } });
+    assert.equal(gabrielJoin.conference.provider, 'jitsi');
+    assert.equal(gabrielJoin.conference.domain, 'meet.jit.si');
+    assert.equal(gabrielJoin.conference.roomName, amigoJoin.conference.roomName);
     const roster = await nextEvent(gabriel, (event) => event.type === 'call-state' && event.users.length === 2);
     assert.deepEqual(new Set(roster.users.map((user) => user.id)), new Set(['gabriel-1', 'amigo-1']));
     assert.equal(roster.users.find((user) => user.id === 'amigo-1').textRoom, 'projetos');

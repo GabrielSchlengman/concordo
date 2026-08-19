@@ -1,4 +1,4 @@
-# Concord 0.8 — configuração do serviço público
+# Concord 0.9.0 — chamadas estáveis hospedadas pelo Jitsi
 services:
   - type: web
     name: lume-app

@@ -10,10 +10,18 @@ let annotationOverlay = null;
 let annotationOverlayState = { items: [] };
 const allowedSourceIds = new Map();
 const CLOUD_URL = process.env.CONCORD_SERVER_URL || process.env.LUME_SERVER_URL || 'https://lume-app-ym0d.onrender.com';
+const JITSI_ORIGIN = 'https://meet.jit.si';
 
 function isTrustedUrl(value) {
   try { return Boolean(appOrigin) && new URL(value).origin === appOrigin; }
   catch { return false; }
+}
+
+function isTrustedMediaUrl(value) {
+  try {
+    const origin = new URL(value).origin;
+    return origin === appOrigin || origin === JITSI_ORIGIN;
+  } catch { return false; }
 }
 
 function isTrustedSender(event) {
@@ -86,17 +94,17 @@ function startLocalServer() {
 
 function configureMediaPermissions() {
   session.defaultSession.setPermissionCheckHandler((_webContents, permission, requestingOrigin) => {
-    return isTrustedUrl(requestingOrigin) && ['media', 'display-capture', 'fullscreen'].includes(permission);
+    return isTrustedMediaUrl(requestingOrigin) && ['media', 'display-capture', 'fullscreen'].includes(permission);
   });
 
-  session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
-    const trusted = isTrustedUrl(webContents.getURL());
+  session.defaultSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
+    const trusted = isTrustedMediaUrl(details?.requestingUrl || webContents.getURL());
     callback(trusted && ['media', 'display-capture', 'fullscreen'].includes(permission));
   });
 
   session.defaultSession.setDisplayMediaRequestHandler(async (request, callback) => {
     try {
-      if (!request.userGesture || !isTrustedUrl(request.securityOrigin) || !isTrustedUrl(request.frame?.url || '')) {
+      if (!request.userGesture || !isTrustedMediaUrl(request.securityOrigin) || !isTrustedMediaUrl(request.frame?.url || '')) {
         callback({});
         return;
       }
@@ -116,7 +124,7 @@ function configureMediaPermissions() {
     } catch {
       callback({});
     }
-  });
+  }, { useSystemPicker: true });
 }
 
 function registerDesktopHandlers() {

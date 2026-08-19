@@ -67,7 +67,8 @@
         <div class="call-toolbar">
           <div><strong id="call-title">Lobby</strong><small id="call-status">Preparando chamada…</small></div>
           <div class="call-toolbar-actions">
-            <button id="reconnect-media" class="toolbar-button" title="Refazer a conexão de áudio e vídeo"><span data-icon="refresh"></span><span>Reconectar</span></button>
+            <button id="reconnect-media" class="toolbar-button" title="Reabrir a chamada"><span data-icon="refresh"></span><span>Reabrir</span></button>
+            <button id="jitsi-open-external" class="toolbar-button hidden" title="Iniciar a sala ou abrir a chamada em uma janela separada"><span data-icon="fullscreen"></span><span>Iniciar chamada</span></button>
             <button id="layout-button" class="toolbar-button" title="Opções de visualização"><span data-icon="grid"></span><span>Visualização</span></button>
           </div>
         </div>
@@ -81,6 +82,15 @@
           <button id="self-view-button" class="view-option active"><span data-icon="eye"></span><span><strong>Minha câmera</strong><small>Mostra ou esconde sua própria imagem.</small></span></button>
           <button id="screen-preview-button" class="view-option active"><span data-icon="screen"></span><span><strong>Preview da minha tela</strong><small>Mostra o que você está transmitindo.</small></span></button>
           <button id="fullscreen-button" class="view-option"><span data-icon="fullscreen"></span><span><strong>Tela cheia</strong><small>Ocupa toda a tela com a chamada.</small></span></button>
+        </div>
+
+        <div id="jitsi-call" class="jitsi-call hidden">
+          <div id="jitsi-container" class="jitsi-container"></div>
+          <div id="jitsi-loading" class="jitsi-loading">
+            <span class="jitsi-spinner"></span>
+            <strong>Preparando chamada estável…</strong>
+            <small>Áudio, câmera e tela serão abertos com segurança dentro do Concord.</small>
+          </div>
         </div>
 
         <div id="video-grid" class="video-grid"></div>
@@ -176,6 +186,7 @@
 
       <div class="settings-page" data-settings-page="voice">
         <h1>Voz e áudio</h1>
+        <div class="stable-call-note"><strong>Chamada estável ativada</strong><p>O Concord agora usa a infraestrutura do Jitsi para evitar áudio cortado e tela preta entre redes diferentes. Para iniciar uma sala, a primeira pessoa clica em “Eu sou o anfitrião” e entra com Google; os amigos apenas aguardam e não precisam de conta.</p></div>
         <div class="settings-grid two">
           <label>Dispositivo de entrada<select id="input-device"><option value="default">Padrão do sistema</option></select></label>
           <label>Dispositivo de saída<select id="output-device"><option value="default">Padrão do sistema</option></select></label>
@@ -196,13 +207,14 @@
         <label class="switch-row"><span><strong>Cancelamento de eco</strong><small id="echo-status">Verificando suporte…</small></span><input id="echo-cancellation" type="checkbox" checked><i></i></label>
         <label class="switch-row"><span><strong>Controle automático de ganho</strong><small id="gain-status">Verificando suporte…</small></span><input id="auto-gain" type="checkbox" checked><i></i></label>
         <h2>Privacidade e sons</h2>
-        <label class="switch-row"><span><strong>Proteção rígida de IP</strong><small>Força retransmissão. Ative só com um TURN próprio; o gratuito pode bloquear áudio e tela.</small></span><input id="protect-ip" type="checkbox"><i></i></label>
+        <label class="switch-row hidden"><span><strong>Proteção rígida de IP</strong><small>Compatibilidade com o sistema antigo de chamadas.</small></span><input id="protect-ip" type="checkbox"><i></i></label>
         <label class="switch-row"><span><strong>Sons da chamada</strong><small>Entrada, saída, tela, microfone e fone.</small></span><input id="call-sounds" type="checkbox" checked><i></i></label>
         <label class="range-field">Volume dos sons <output id="sound-volume-value">45%</output><input id="sound-volume" type="range" min="0" max="100" value="45"></label>
       </div>
 
       <div class="settings-page" data-settings-page="video">
         <h1>Vídeo e compartilhamento</h1>
+        <div class="stable-call-note"><strong>Controles dentro da chamada</strong><p>Use os botões que aparecem sobre a chamada para câmera, tela cheia, grade, compartilhamento e qualidade. As anotações antigas ficam desativadas neste modo para não encobrir a transmissão.</p></div>
         <label class="switch-row"><span><strong>Mostrar vídeos dos participantes</strong><small>Ocultar vídeo não corta o áudio.</small></span><input id="setting-participant-video" type="checkbox" checked><i></i></label>
         <label class="switch-row"><span><strong>Mostrar minha câmera</strong><small>Exibe ou esconde seu quadro local.</small></span><input id="setting-self-view" type="checkbox" checked><i></i></label>
         <label class="switch-row"><span><strong>Preview da minha tela</strong><small>Mostra localmente aquilo que você está compartilhando.</small></span><input id="setting-screen-preview" type="checkbox" checked><i></i></label>

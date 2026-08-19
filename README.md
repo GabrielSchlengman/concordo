@@ -1,6 +1,6 @@
 # Concord
 
-Comunidade em tempo real inspirada na experiência de aplicativos como o Discord. Inclui canais, chat com anexos e mensagens de voz, presença global, chamadas P2P, câmera, microfone, compartilhamento de tela e anotações colaborativas. O projeto pode ser usado no navegador ou como aplicativo desktop.
+Comunidade em tempo real inspirada na experiência de aplicativos como o Discord. Inclui canais, chat com anexos e mensagens de voz, presença global e chamadas hospedadas com câmera, microfone e compartilhamento de tela. O projeto pode ser usado no navegador ou como aplicativo desktop.
 
 ## Aplicativo desktop
 
@@ -38,27 +38,24 @@ Alguns navegadores só liberam câmera, microfone e compartilhamento de tela em 
 - Imagens, vídeos, áudios, PDF e texto podem ser visualizados no Concord; todos os anexos têm opção de download.
 - Exclusão das próprias mensagens e anexos, rolagem livre do histórico e aviso de novas mensagens sem puxar a tela à força.
 - Lista de pessoas conectadas no texto e em cada canal de voz.
-- Áudio e vídeo via WebRTC com STUN/TURN, oferta inicial determinística, reprodução compatível, renegociação e botão de reconexão. O modo normal tenta a rota direta primeiro, passa para TURN após alguns segundos e encerra a tentativa com um erro claro; a proteção rígida por retransmissão é opcional.
-- Microfone, câmera, ensurdecimento do fone e volume geral ou individual.
-- Menu por participante no botão direito para silenciar, ajustar volume, esconder vídeo ou priorizar.
-- Compartilhamento de tela com preview local opcional.
-- Anotações sincronizadas por cima da tela compartilhada com caneta, borracha, texto, marcador de clique, desfazer e apagar tudo.
-- No aplicativo desktop, quem compartilha a tela inteira pode ver as marcações sobre a própria tela real, em uma camada transparente que não bloqueia cliques e é excluída da captura.
-- Controle do compartilhador para permitir ou bloquear anotações dos participantes.
-- Destaque automático de compartilhamentos e menu explicado de visualização com grade, foco, vídeos, visão própria, preview da tela e tela cheia.
+- Áudio, vídeo e compartilhamento de tela incorporados pelo Jitsi Meet, evitando a dependência do Open Relay público que deixava a tela preta e o áudio preso entre redes diferentes.
+- Microfone, câmera, grade, foco, tela cheia, escolha de dispositivos e qualidade pelos controles integrados da chamada.
+- Ensurdecimento geral no Concord e controles de cada participante pelo painel da chamada.
+- Botão para reabrir a mídia e alternativa para abrir a mesma sala em uma janela separada caso o navegador bloqueie o quadro incorporado.
+- O código do modo direto e das anotações sincronizadas foi preservado para evolução futura, mas as anotações ficam desativadas no modo hospedado porque o navegador isola a transmissão externa.
 - Indicador visual de quem está falando, medidor ao vivo com linha de sensibilidade e teste real de retorno do microfone.
-- Supressão de ruído, cancelamento de eco e controle de ganho aplicados ao reabrir e substituir a trilha do microfone, com confirmação do estado oferecido pelo navegador.
+- Supressão de ruído acionada na chamada hospedada; cancelamento de eco e ganho ficam sob responsabilidade do navegador e do mecanismo de mídia do Jitsi.
 - Foto de perfil e configurações de entrada, saída, câmera e qualidade de transmissão.
 - Sons suaves e diferentes para entrada, saída, compartilhamento, microfone e fone.
-- Interface responsiva sem dependências externas.
+- Interface responsiva, com o Jitsi Meet usado somente dentro do painel de chamada.
 
 ## Limitações intencionais do MVP
 
 - Contas, servidores e mensagens não são salvos em banco de dados.
 - Os anexos ficam temporariamente na memória do serviço, podem expirar em até 24 horas e somam no máximo 64 MB nesta versão gratuita.
-- As chamadas usam conexão P2P, adequada para pequenos grupos.
-- Sem um TURN de produção, o fallback gratuito serve apenas para desenvolvimento e pode limitar ou bloquear mídia entre redes diferentes. O servidor aceita `TURN_URLS`, `TURN_USERNAME` e `TURN_CREDENTIAL`, uma URL de credenciais do Metered em `METERED_TURN_URL`, ou as credenciais de chave do Cloudflare em `CLOUDFLARE_TURN_KEY_ID` e `CLOUDFLARE_TURN_API_TOKEN`.
-- Para grupos maiores, a chamada deve migrar de P2P para uma arquitetura SFU.
+- As chamadas usam a instância pública `meet.jit.si`, que não exige chave, conta nem hospedagem na máquina do usuário. O serviço é externo, não oferece garantia de disponibilidade e segue os limites de uso publicados pelo Jitsi.
+- O nome interno de cada sala é aleatório por execução do servidor, reduzindo a chance de alguém adivinhar uma chamada. Quando o Render reinicia, as salas também são renovadas.
+- O sistema direto antigo continua aceitando `TURN_URLS`, `TURN_USERNAME`, `TURN_CREDENTIAL`, `METERED_TURN_URL`, `CLOUDFLARE_TURN_KEY_ID` e `CLOUDFLARE_TURN_API_TOKEN`, mas não é usado como padrão na versão 0.9.
 
 ## Próximas etapas sugeridas
 
